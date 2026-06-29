@@ -4,6 +4,7 @@ logs/
 build/
 dist/
 dchic_projects/
+demo/
 
 # Files
 demo_verify_enrichment.xlsx
