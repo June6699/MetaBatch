@@ -14,3 +14,19 @@
 - `Fix`: Metascape 下载改为更稳健的自动化链路，增加直接链接兜底，降低 `Download.save_as: canceled` 的概率。
 - `Fix`: Metascape 的 `Submit`、`Express Analysis`、`Analysis Report Page`、下载入口点击增加显式等待、重试、force click / JS click 兜底，缓解 5 并发下偶发点击超时。
 - `Fix`: `Enrichment` 缺失时保持失败语义，但提示调整为“可能因为基因过少未产生富集结果”。
+
+## 2026-06-30
+
+- `Add`: 日志视图升级为彩色日志，按成功、失败、警告、进度、操作等类型区分显示颜色。
+
+- `Add`: 进度页新增按并发 worker 纵向排列的独立进度卡片，可滚动查看每个 worker 的当前状态。
+
+- `Add`: Worker 进度卡片支持显示当前阶段、Metascape 进度、翻译进度、最近状态和当前文件路径。
+
+- `Add`: 使用 PyInstaller 打包生成 `dist/MetaBatch.exe`，支持无 Python 环境启动桌面程序。
+
+- `Update`: 打包产物使用内置图标，并兼容 `sys._MEIPASS` 的资源路径解析。
+
+- `Fix`: 修复 worker 进度回调链路，GUI 与 workflow 之间现在会同步传递 worker 编号和当前文件相对路径。
+
+  
