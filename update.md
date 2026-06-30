@@ -1,10 +1,5 @@
 # Update Log
 
-## 2026-07-01
-
-- `Fix`: 修复 `WorkflowWorker` 与 `WorkflowController` 的进度回调参数不一致，避免运行时触发 `takes 8 positional arguments but 9 were given`。
-- `Update`: 重新使用 PyInstaller 构建 `dist/MetaBatch.exe`，并替换为最新产物。
-
 ## 2026-06-29
 
 - `Add`: MetaBatch 迁移到 PySide6 主界面，解决 Windows 下字体发虚问题。
@@ -34,4 +29,7 @@
 
 - `Fix`: 修复 worker 进度回调链路，GUI 与 workflow 之间现在会同步传递 worker 编号和当前文件相对路径。
 
-  
+## 2026-07-01
+
+- `Fix`: 修复 `WorkflowWorker` 与 `WorkflowController` 的进度回调参数不一致，避免运行时触发 `takes 8 positional arguments but 9 were given`。
+- `Update`: 重新使用 PyInstaller 构建 `dist/MetaBatch.exe`，并替换为最新产物。
