@@ -126,7 +126,7 @@ class WorkflowWorker(QObject):
                 self._config,
                 self._stop_event,
                 lambda worker_id, message: self.log.emit(worker_id, message),
-                lambda current, total, status, analysis_percent, analysis_status, translation_percent, translation_status, worker_id: self.progress.emit(
+                lambda current, total, status, analysis_percent, analysis_status, translation_percent, translation_status, worker_id, current_path: self.progress.emit(
                     current,
                     total,
                     status,
@@ -135,7 +135,7 @@ class WorkflowWorker(QObject):
                     translation_percent,
                     translation_status,
                     worker_id,
-                    "",
+                    current_path,
                 ),
             )
             self.done.emit(results)
