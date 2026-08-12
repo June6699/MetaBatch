@@ -34,8 +34,9 @@ from PySide6.QtWidgets import (
 from .assets import ensure_app_icon
 from .gene_reader import discover_gene_files
 from .logging_utils import get_logs_dir
-from .models import AnalysisMode, AppConfig, ConnectionMode, DownloadType, TaskResult, TaskStatus
+from .models import ApiFormat, AnalysisMode, AppConfig, ConnectionMode, DownloadType, TaskResult, TaskStatus
 from .settings import DEFAULT_PROFILE_NAME, SavedProfile, SettingsStore
+from .translator import TranslationError, fetch_available_models, test_translation_connection
 from .workflow import WorkflowController
 
 
@@ -57,6 +58,8 @@ def _build_config(values: dict[str, Any]) -> AppConfig:
     api_base_url = str(values.get("api_base_url", "")).strip()
     api_key = str(values.get("api_key", "")).strip()
     api_model = str(values.get("api_model", "")).strip()
+    api_format = ApiFormat.from_value(str(values.get("api_format", ApiFormat.ANTHROPIC_MESSAGES.value)))
+    auth_field = str(values.get("auth_field", "ANTHROPIC_AUTH_TOKEN")).strip() or "ANTHROPIC_AUTH_TOKEN"
     proxy_host = str(values.get("proxy_host", "127.0.0.1")).strip() or "127.0.0.1"
     proxy_port = _parse_proxy_port(str(values.get("proxy_port", "")).strip())
     concurrency = max(1, min(int(values.get("concurrency", 5)), 32))
@@ -88,6 +91,8 @@ def _build_config(values: dict[str, Any]) -> AppConfig:
         api_base_url=api_base_url,
         api_key=api_key,
         api_model=api_model,
+        api_format=api_format,
+        auth_field=auth_field,
         input_column=input_column,
         headless=bool(values.get("headless", True)),
         metascape_connection_mode=ConnectionMode.from_value(str(values.get("metascape_connection_mode", ConnectionMode.DIRECT.value))),
@@ -144,6 +149,62 @@ class WorkflowWorker(QObject):
 
     def request_stop(self) -> None:
         self._stop_event.set()
+
+
+class TranslationProbeWorker(QObject):
+    models_loaded = Signal(list)
+    succeeded = Signal(str)
+    failed = Signal(str)
+    finished = Signal()
+
+    def __init__(
+        self,
+        action: str,
+        base_url: str,
+        api_key: str,
+        model: str,
+        proxy_url: str | None,
+        api_format: ApiFormat,
+        auth_field: str,
+    ) -> None:
+        super().__init__()
+        self._action = action
+        self._base_url = base_url
+        self._api_key = api_key
+        self._model = model
+        self._proxy_url = proxy_url
+        self._api_format = api_format
+        self._auth_field = auth_field
+
+    def run(self) -> None:
+        try:
+            if self._action == "models":
+                self.models_loaded.emit(
+                    fetch_available_models(
+                        self._base_url,
+                        self._api_key,
+                        self._proxy_url,
+                        api_format=self._api_format,
+                        auth_field=self._auth_field,
+                    )
+                )
+            else:
+                self.succeeded.emit(
+                    test_translation_connection(
+                        self._base_url,
+                        self._api_key,
+                        self._model,
+                        self._proxy_url,
+                        api_format=self._api_format,
+                        auth_field=self._auth_field,
+                    )
+                )
+        except (TranslationError, ValueError) as exc:
+            self.failed.emit(str(exc))
+        except Exception as exc:  # noqa: BLE001
+            self.failed.emit(f"翻译接口检测异常：{exc}")
+        finally:
+            self.finished.emit()
 
 
 class ColoredLogView(QTextEdit):
@@ -203,6 +264,8 @@ class MainWindow(QMainWindow):
         self._settings, self._settings_warning = self._settings_store.load()
         self._worker_thread: QThread | None = None
         self._worker: WorkflowWorker | None = None
+        self._translation_probe_thread: QThread | None = None
+        self._translation_probe_worker: TranslationProbeWorker | None = None
         self._worker_log_outputs: dict[int, ColoredLogView] = {}
         self._current_worker_count = 0
         self._worker_progress_cards: dict[int, dict[str, object]] = {}
@@ -282,9 +345,29 @@ class MainWindow(QMainWindow):
         self.enable_translation_checkbox = QCheckBox("启用翻译")
         self.enable_translation_checkbox.setChecked(True)
         self.api_base_url_edit = QLineEdit()
+        self.api_base_url_edit.setPlaceholderText("例如 https://aibz.cc")
+        self.api_format_combo = QComboBox()
+        self.api_format_combo.addItem("Anthropic Messages（原生）", ApiFormat.ANTHROPIC_MESSAGES.value)
+        self.api_format_combo.addItem("OpenAI Chat Completions", ApiFormat.OPENAI_CHAT.value)
+        self.api_format_combo.addItem("Responses（原生）", ApiFormat.OPENAI_RESPONSES.value)
+        self.api_format_combo.currentIndexChanged.connect(self._on_api_format_changed)
         self.api_key_edit = QLineEdit()
         self.api_key_edit.setEchoMode(QLineEdit.Password)
-        self.api_model_edit = QLineEdit()
+        self.auth_field_combo = QComboBox()
+        self.auth_field_combo.setEditable(True)
+        self.auth_field_combo.addItems(["ANTHROPIC_AUTH_TOKEN", "Authorization", "x-api-key"])
+        self.auth_field_combo.setCurrentText("ANTHROPIC_AUTH_TOKEN")
+        self.api_model_combo = QComboBox()
+        self.api_model_combo.setEditable(True)
+        self.api_model_combo.setInsertPolicy(QComboBox.NoInsert)
+        self.fetch_models_button = QPushButton("获取模型")
+        self.fetch_models_button.setToolTip("从当前 API Base URL 获取模型列表")
+        self.fetch_models_button.clicked.connect(lambda: self._start_translation_probe("models"))
+        self.test_translation_button = QPushButton("测试连通性")
+        self.test_translation_button.setToolTip("用当前模型发送一次最小翻译请求")
+        self.test_translation_button.clicked.connect(lambda: self._start_translation_probe("test"))
+        self.translation_probe_status_label = QLabel("翻译接口：未检测")
+        self.translation_probe_status_label.setStyleSheet("color: #666666;")
         self.analysis_mode_combo = QComboBox()
         self.analysis_mode_combo.addItem(AnalysisMode.EXPRESS.value)
         self.download_xlsx_radio = QRadioButton("仅 Excel (xlsx)")
@@ -335,9 +418,22 @@ class MainWindow(QMainWindow):
         row += 1
         self._add_row(form_layout, row, "API Base URL", self.api_base_url_edit)
         row += 1
+        self._add_row(form_layout, row, "API 格式", self.api_format_combo)
+        row += 1
         self._add_row(form_layout, row, "API Key", self.api_key_edit)
         row += 1
-        self._add_row(form_layout, row, "API Model", self.api_model_edit)
+        self._add_row(form_layout, row, "认证字段", self.auth_field_combo)
+        row += 1
+        model_widget = QWidget()
+        model_layout = QHBoxLayout(model_widget)
+        model_layout.setContentsMargins(0, 0, 0, 0)
+        model_layout.setSpacing(8)
+        model_layout.addWidget(self.api_model_combo, 1)
+        model_layout.addWidget(self.fetch_models_button)
+        model_layout.addWidget(self.test_translation_button)
+        self._add_row(form_layout, row, "API Model", model_widget)
+        row += 1
+        form_layout.addWidget(self.translation_probe_status_label, row, 1, 1, 2)
         row += 1
         self._add_row(form_layout, row, "Metascape 连接方式", self.metascape_connection_mode_combo)
         row += 1
@@ -540,8 +636,10 @@ class MainWindow(QMainWindow):
             "input_column": self.input_column_edit.text(),
             "enable_translation": self.enable_translation_checkbox.isChecked(),
             "api_base_url": self.api_base_url_edit.text(),
+            "api_format": self.api_format_combo.currentData(),
             "api_key": self.api_key_edit.text(),
-            "api_model": self.api_model_edit.text(),
+            "api_model": self.api_model_combo.currentText(),
+            "auth_field": self.auth_field_combo.currentText(),
             "headless": self.headless_checkbox.isChecked(),
             "download_type": DownloadType.XLSX_ONLY.value if self.download_xlsx_radio.isChecked() else DownloadType.ZIP_WITH_EXTRACT.value,
             "metascape_connection_mode": self.metascape_connection_mode_combo.currentData(),
@@ -564,6 +662,8 @@ class MainWindow(QMainWindow):
             api_base_url=str(values["api_base_url"]).strip(),
             api_key=str(values["api_key"]).strip(),
             api_model=str(values["api_model"]).strip(),
+            api_format=str(values["api_format"]),
+            auth_field=str(values["auth_field"]).strip() or "ANTHROPIC_AUTH_TOKEN",
             headless=bool(values["headless"]),
             metascape_connection_mode=str(values["metascape_connection_mode"]),
             translation_connection_mode=str(values["translation_connection_mode"]),
@@ -596,8 +696,10 @@ class MainWindow(QMainWindow):
         self.input_column_edit.setText(profile.input_column)
         self.enable_translation_checkbox.setChecked(profile.enable_translation)
         self.api_base_url_edit.setText(profile.api_base_url)
+        self._set_combo_by_data(self.api_format_combo, profile.api_format)
         self.api_key_edit.setText(profile.api_key)
-        self.api_model_edit.setText(profile.api_model)
+        self.api_model_combo.setCurrentText(profile.api_model)
+        self.auth_field_combo.setCurrentText(profile.auth_field)
         self.headless_checkbox.setChecked(profile.headless)
         self.download_xlsx_radio.setChecked(profile.download_type == DownloadType.XLSX_ONLY.value)
         self.download_zip_radio.setChecked(profile.download_type == DownloadType.ZIP_WITH_EXTRACT.value)
@@ -612,6 +714,13 @@ class MainWindow(QMainWindow):
         index = combo.findData(data)
         if index >= 0:
             combo.setCurrentIndex(index)
+
+    def _on_api_format_changed(self, _index: int) -> None:
+        format_value = self.api_format_combo.currentData()
+        if format_value == ApiFormat.ANTHROPIC_MESSAGES.value:
+            self.auth_field_combo.setCurrentText("ANTHROPIC_AUTH_TOKEN")
+        else:
+            self.auth_field_combo.setCurrentText("Authorization")
 
     def _on_profile_activated(self, _index: int) -> None:
         profile_name = self.profile_combo.currentText().strip()
@@ -671,6 +780,93 @@ class MainWindow(QMainWindow):
         selected = QFileDialog.getExistingDirectory(self, "选择输出结果文件夹", self.output_dir_edit.text() or "")
         if selected:
             self.output_dir_edit.setText(selected)
+
+    def _start_translation_probe(self, action: str) -> None:
+        if self._translation_probe_thread is not None:
+            return
+
+        base_url = self.api_base_url_edit.text().strip()
+        api_key = self.api_key_edit.text().strip()
+        model = self.api_model_combo.currentText().strip()
+        if not base_url or not api_key:
+            QMessageBox.warning(self, "翻译接口", "请先填写 API Base URL 和 API Key。")
+            return
+        if action == "test" and not model:
+            QMessageBox.warning(self, "翻译接口", "测试连通性前请先选择或填写 API Model。")
+            return
+
+        try:
+            connection_mode = ConnectionMode.from_value(str(self.translation_connection_mode_combo.currentData()))
+            api_format = ApiFormat.from_value(str(self.api_format_combo.currentData()))
+            proxy_port = _parse_proxy_port(self.proxy_port_edit.text())
+            if connection_mode is ConnectionMode.PROXY and proxy_port is None:
+                raise ValueError("翻译 API 使用代理时请输入有效端口。")
+            proxy_url = (
+                f"http://{self.proxy_host_edit.text().strip() or '127.0.0.1'}:{proxy_port}"
+                if connection_mode is ConnectionMode.PROXY and proxy_port is not None
+                else None
+            )
+        except ValueError as exc:
+            QMessageBox.warning(self, "翻译接口", str(exc))
+            return
+
+        self.fetch_models_button.setEnabled(False)
+        self.test_translation_button.setEnabled(False)
+        self.translation_probe_status_label.setStyleSheet("color: #1565c0;")
+        self.translation_probe_status_label.setText("翻译接口：正在检测")
+        self.append_log(None, "翻译接口检测开始。")
+
+        self._translation_probe_thread = QThread(self)
+        self._translation_probe_worker = TranslationProbeWorker(
+            action,
+            base_url,
+            api_key,
+            model,
+            proxy_url,
+            api_format,
+            self.auth_field_combo.currentText().strip() or "ANTHROPIC_AUTH_TOKEN",
+        )
+        self._translation_probe_worker.moveToThread(self._translation_probe_thread)
+        self._translation_probe_thread.started.connect(self._translation_probe_worker.run)
+        self._translation_probe_worker.models_loaded.connect(self._on_models_loaded)
+        self._translation_probe_worker.succeeded.connect(self._on_translation_probe_succeeded)
+        self._translation_probe_worker.failed.connect(self._on_translation_probe_failed)
+        self._translation_probe_worker.finished.connect(self._translation_probe_thread.quit)
+        self._translation_probe_thread.finished.connect(self._cleanup_translation_probe)
+        self._translation_probe_thread.start()
+
+    def _on_models_loaded(self, models: list[str]) -> None:
+        selected = self.api_model_combo.currentText().strip()
+        self.api_model_combo.blockSignals(True)
+        self.api_model_combo.clear()
+        self.api_model_combo.addItems(models)
+        self.api_model_combo.setCurrentText(selected or models[0])
+        self.api_model_combo.blockSignals(False)
+        message = f"已获取 {len(models)} 个模型。"
+        self.translation_probe_status_label.setStyleSheet("color: #2e7d32;")
+        self.translation_probe_status_label.setText(f"翻译接口：{message}")
+        self.append_log(None, f"翻译接口{message}")
+
+    def _on_translation_probe_succeeded(self, message: str) -> None:
+        self.translation_probe_status_label.setStyleSheet("color: #2e7d32;")
+        self.translation_probe_status_label.setText(f"翻译接口：{message}")
+        self.append_log(None, f"翻译接口{message}")
+
+    def _on_translation_probe_failed(self, message: str) -> None:
+        self.translation_probe_status_label.setStyleSheet("color: #c62828;")
+        self.translation_probe_status_label.setText("翻译接口：检测失败")
+        self.append_log(None, f"翻译接口检测失败：{message}")
+        QMessageBox.warning(self, "翻译接口检测失败", message)
+
+    def _cleanup_translation_probe(self) -> None:
+        if self._translation_probe_worker is not None:
+            self._translation_probe_worker.deleteLater()
+            self._translation_probe_worker = None
+        if self._translation_probe_thread is not None:
+            self._translation_probe_thread.deleteLater()
+            self._translation_probe_thread = None
+        self.fetch_models_button.setEnabled(True)
+        self.test_translation_button.setEnabled(True)
 
     def _start(self) -> None:
         try:

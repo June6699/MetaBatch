@@ -346,6 +346,8 @@ class WorkflowController:
             base_url=config.api_base_url,
             api_key=config.api_key,
             model=config.api_model,
+            api_format=config.api_format,
+            auth_field=config.auth_field,
             request_interval_seconds=config.request_interval_seconds,
             max_retries=config.translation_max_retries,
             proxy_url=config.proxy_url_for(config.translation_connection_mode),

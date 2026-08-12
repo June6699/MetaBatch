@@ -4,7 +4,7 @@ import json
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from .models import AppConfig, ConnectionMode, DownloadType
+from .models import ApiFormat, AppConfig, ConnectionMode, DownloadType
 from .runtime import get_app_data_dir
 
 CONFIG_FILENAME = "metabatch_config.json"
@@ -22,6 +22,8 @@ class SavedProfile:
     api_base_url: str = ""
     api_key: str = ""
     api_model: str = ""
+    api_format: str = ApiFormat.ANTHROPIC_MESSAGES.value
+    auth_field: str = "ANTHROPIC_AUTH_TOKEN"
     headless: bool = True
     metascape_connection_mode: str = ConnectionMode.DIRECT.value
     translation_connection_mode: str = ConnectionMode.DIRECT.value
@@ -41,6 +43,8 @@ class SavedProfile:
             api_base_url=config.api_base_url,
             api_key=config.api_key,
             api_model=config.api_model,
+            api_format=config.api_format.value,
+            auth_field=config.auth_field,
             headless=config.headless,
             metascape_connection_mode=config.metascape_connection_mode.value,
             translation_connection_mode=config.translation_connection_mode.value,
@@ -92,6 +96,10 @@ class SettingsStore:
                     api_base_url=str(payload.get("api_base_url", "")),
                     api_key=str(payload.get("api_key", "")),
                     api_model=str(payload.get("api_model", "")),
+                    api_format=ApiFormat.from_value(
+                        str(payload.get("api_format", ApiFormat.ANTHROPIC_MESSAGES.value))
+                    ).value,
+                    auth_field=str(payload.get("auth_field", "ANTHROPIC_AUTH_TOKEN")),
                     headless=bool(payload.get("headless", True)),
                     metascape_connection_mode=ConnectionMode.from_value(
                         str(payload.get("metascape_connection_mode", ConnectionMode.DIRECT.value))

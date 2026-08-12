@@ -35,6 +35,25 @@ class ConnectionMode(str, Enum):
         return cls(normalized or cls.DIRECT.value)
 
 
+class ApiFormat(str, Enum):
+    ANTHROPIC_MESSAGES = "anthropic_messages"
+    OPENAI_CHAT = "openai_chat_completions"
+    OPENAI_RESPONSES = "openai_responses"
+
+    @classmethod
+    def from_value(cls, value: str) -> "ApiFormat":
+        normalized = value.strip().lower()
+        aliases = {
+            "anthropic": cls.ANTHROPIC_MESSAGES,
+            "anthropic_messages_native": cls.ANTHROPIC_MESSAGES,
+            "openai": cls.OPENAI_CHAT,
+            "openai_chat": cls.OPENAI_CHAT,
+            "responses": cls.OPENAI_RESPONSES,
+            "openai_responses_native": cls.OPENAI_RESPONSES,
+        }
+        return aliases.get(normalized, cls(normalized or cls.ANTHROPIC_MESSAGES.value))
+
+
 class TaskStatus(str, Enum):
     SUCCESS = "success"
     SKIPPED = "skipped"
@@ -52,6 +71,8 @@ class AppConfig:
     api_base_url: str = ""
     api_key: str = ""
     api_model: str = ""
+    api_format: ApiFormat = ApiFormat.ANTHROPIC_MESSAGES
+    auth_field: str = "ANTHROPIC_AUTH_TOKEN"
     input_column: str = ""
     headless: bool = True
     metascape_connection_mode: ConnectionMode = ConnectionMode.DIRECT
