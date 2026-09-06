@@ -19,7 +19,7 @@ MetaBatch is a Python 3.11 desktop tool for batch enrichment analysis on [Metasc
 - **AI translation**: calls an OpenAI-compatible chat API (also compatible with the native Anthropic Messages format and the OpenAI Responses format), with one-click model fetching and connection testing. The translation target language is selectable (Simplified Chinese by default; English is not offered because Metascape descriptions are already in English): Traditional Chinese, Japanese, Korean, French, German, Spanish, Portuguese, Russian, and Italian are available. Identical terms share a single in-flight request across concurrent workers, and `429/5xx` responses are retried with exponential backoff.
 - **Multiple profiles**: save and switch between multiple configuration profiles; the last-used profile is restored on startup. The UI language (中文 / English) and the translation target language are persisted per profile.
 - **Connections**: Metascape and the translation API can each use a direct connection or a proxy; concurrency is adjustable (default 5, max 32).
-- **Bilingual UI**: switch between 中文 and English with one click, effective immediately; log and error messages follow the UI language.
+- **Bilingual UI**: switch between 中文 and English with one click in the dedicated "语言 / Language" tab at the top, effective immediately; log and error messages follow the UI language.
 - **Progress and logs**: three progress bars (batch, Metascape analysis, translation) plus per-worker progress cards and log tabs; logs are color-coded by type and written to the `logs/` directory, recording per-file Metascape time, translation time, and total time. Batch progress is shown as `x/y (z%)`.
 - **Robustness**: workers rest for a random 5–10 seconds between files to avoid rate limiting; existing results are skipped automatically (resume support); a single failed file does not affect the rest; scroll-wheel protection prevents accidentally changing dropdowns or tabs while scrolling.
 - **Ready to go**: built-in app icon, reusable for both source runs and PyInstaller-packaged runs.
@@ -80,7 +80,7 @@ py -3.11 main.py
    - `Model` (use "Fetch Models" to pull the list, "Test Connection" to verify)
    - Choose `API format` and `Auth field` according to your provider
 6. For other languages, pick a target language (Simplified Chinese by default).
-7. Select an existing profile in the top bar, or manage profiles with "Save / Save As / Delete"; the UI language switch is at the top-right of the profile bar.
+7. Select an existing profile in the top bar, or manage profiles with "Save / Save As / Delete"; the UI language switch lives in the dedicated "语言 / Language" tab at the top.
 8. Optionally disable translation, or configure proxies and concurrency for Metascape / the translation API.
 9. Click "Start".
 

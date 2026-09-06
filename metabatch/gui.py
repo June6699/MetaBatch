@@ -354,16 +354,20 @@ class MainWindow(QMainWindow):
         self.run_tab = self._make_scroll_tab()
         self.progress_tab = self._make_scroll_tab()
         self.log_tab = self._make_scroll_tab()
+        self.language_tab = self._make_scroll_tab()
 
         self.tabs.addTab(self.config_tab["container"], tr("配置"))
         self.tabs.addTab(self.run_tab["container"], tr("运行"))
         self.tabs.addTab(self.progress_tab["container"], tr("进度"))
         self.tabs.addTab(self.log_tab["container"], tr("日志"))
+        # 标签名固定双语，不随界面语言切换：语言不对的用户也能一眼找到这里。
+        self.tabs.addTab(self.language_tab["container"], "语言 / Language")
 
         self._build_config_tab(self.config_tab["content"])
         self._build_run_tab(self.run_tab["content"])
         self._build_progress_tab(self.progress_tab["content"])
         self._build_log_tab(self.log_tab["content"])
+        self._build_language_tab(self.language_tab["content"])
         self._rebuild_worker_progress_cards(0)
 
     def _make_scroll_tab(self) -> dict[str, QWidget]:
@@ -388,13 +392,6 @@ class MainWindow(QMainWindow):
         self.profile_combo = WheelGuardComboBox()
         self.profile_combo.setEditable(True)
         self.profile_combo.activated.connect(self._on_profile_activated)
-        self.ui_language_combo = WheelGuardComboBox()
-        self.ui_language_combo.setToolTip(tr("切换界面显示语言，立即生效。"))
-        self.ui_language_combo.blockSignals(True)
-        for language_code, language_label in UI_LANGUAGES.items():
-            self.ui_language_combo.addItem(language_label, language_code)
-        self.ui_language_combo.blockSignals(False)
-        self.ui_language_combo.currentIndexChanged.connect(self._on_ui_language_changed)
         self.save_profile_button = QPushButton(tr("保存当前"))
         self.save_profile_button.clicked.connect(self._save_profile)
         self.save_as_button = QPushButton(tr("另存为"))
@@ -402,7 +399,6 @@ class MainWindow(QMainWindow):
         self.delete_profile_button = QPushButton(tr("删除"))
         self.delete_profile_button.clicked.connect(self._delete_profile)
         profile_layout.addWidget(self.profile_combo, 1)
-        profile_layout.addWidget(self.ui_language_combo)
         profile_layout.addWidget(self.save_profile_button)
         profile_layout.addWidget(self.save_as_button)
         profile_layout.addWidget(self.delete_profile_button)
@@ -610,6 +606,34 @@ class MainWindow(QMainWindow):
         log_layout.addWidget(self.log_tabs)
         layout.addWidget(log_box)
         self._rebuild_worker_log_tabs(0)
+
+    def _build_language_tab(self, parent: QWidget) -> None:
+        # 本页文案固定双语，不做 tr 翻译：语言停在错误值的用户也要能看懂本页。
+        layout = QVBoxLayout(parent)
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setSpacing(12)
+
+        language_box = QGroupBox("界面语言 / UI Language")
+        language_layout = QGridLayout(language_box)
+        language_layout.setHorizontalSpacing(12)
+        language_layout.setVerticalSpacing(10)
+
+        self.ui_language_combo = WheelGuardComboBox()
+        self.ui_language_combo.setToolTip("切换界面显示语言，立即生效。/ Switch the UI display language. Takes effect immediately.")
+        self.ui_language_combo.blockSignals(True)
+        for language_code, language_label in UI_LANGUAGES.items():
+            self.ui_language_combo.addItem(language_label, language_code)
+        self.ui_language_combo.blockSignals(False)
+        self.ui_language_combo.currentIndexChanged.connect(self._on_ui_language_changed)
+
+        self._add_row(language_layout, 0, "界面语言 / UI Language", self.ui_language_combo)
+        hint = QLabel("切换后界面立即刷新；界面语言会随应用设置保存。\n"
+                      "The interface refreshes immediately after switching; the choice is saved with the app settings.")
+        hint.setStyleSheet("color: #666666;")
+        hint.setWordWrap(True)
+        language_layout.addWidget(hint, 1, 1, 1, 2)
+        layout.addWidget(language_box)
+        layout.addStretch(1)
 
     def _create_log_output(self) -> ColoredLogView:
         output = ColoredLogView()
