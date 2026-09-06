@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import random
 import time
+from collections import Counter
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from pathlib import Path
 from threading import Event
@@ -48,6 +49,7 @@ class WorkflowController:
             file_log(None, f"待处理文件数：{total}")
 
             max_workers = max(1, config.concurrency)
+            output_paths_map = _build_output_paths_map(config, gene_files)
             worker_ids: SimpleQueue[int] = SimpleQueue()
             for worker_id in range(1, max_workers + 1):
                 worker_ids.put(worker_id)
@@ -69,6 +71,7 @@ class WorkflowController:
                             stop_event=stop_event,
                             log_callback=file_log,
                             progress_callback=progress_callback,
+                            output_paths=output_paths_map[gene_file],
                         )
                         pending[future] = (gene_file, worker_id)
                         submitted += 1
@@ -126,6 +129,7 @@ class WorkflowController:
         stop_event: Event,
         log_callback: LogCallback,
         progress_callback: ProgressCallback,
+        output_paths: OutputPaths,
     ) -> TaskResult:
         relative_name = gene_file.relative_to(config.input_dir)
         start_time = time.perf_counter()
@@ -133,7 +137,6 @@ class WorkflowController:
         translation_elapsed: float | None = None
         downloaded_path: Path | None = None
         translated_path: Path | None = None
-        output_paths = build_output_paths(config.input_dir, config.output_dir, gene_file, config.download_type)
 
         if output_paths.download_path.exists():
             message = f"检测到已有结果文件，已跳过：{output_paths.download_path}"
@@ -212,7 +215,7 @@ class WorkflowController:
                                 str(relative_name),
                             ),
                         )
-                        finalize_workbook_layout(translated_path, sheet_name="Enrichment", auto_fit_headers=["Description", "中文描述"])
+                        # translate_workbook 内部已完成列宽等布局调整，这里不再重复打开保存一次。
                         translation_elapsed = time.perf_counter() - translation_start
                         log_callback(worker_id, f"[{index}/{total}] 翻译完成：{translated_path}，用时 {self._format_seconds(translation_elapsed)}。")
                     except (ExcelProcessingError, TranslationError, ValueError) as exc:
@@ -252,6 +255,7 @@ class WorkflowController:
                 worker_id,
                 str(relative_name),
             )
+            self._pause_between_files(config, stop_event)
             return TaskResult(
                 source_file=gene_file,
                 status=TaskStatus.SUCCESS,
@@ -289,6 +293,8 @@ class WorkflowController:
                 worker_id,
                 str(relative_name),
             )
+            if metascape_elapsed is not None:
+                self._pause_between_files(config, stop_event)
             return TaskResult(
                 source_file=gene_file,
                 status=status,
@@ -305,6 +311,15 @@ class WorkflowController:
         if seconds is None:
             return "-"
         return f"{seconds:.1f} 秒"
+
+    @staticmethod
+    def _pause_between_files(config: AppConfig, stop_event: Event) -> None:
+        # mission 要求每个文件之间随机休息，降低被 Metascape 限流的风险；等待期间可被停止事件打断。
+        min_delay = max(0, config.min_delay_seconds)
+        max_delay = max(min_delay, config.max_delay_seconds)
+        if max_delay <= 0:
+            return
+        stop_event.wait(random.uniform(min_delay, max_delay))
 
     @staticmethod
     def _write_summary(output_dir: Path, results: list[TaskResult]) -> None:
@@ -360,6 +375,22 @@ def _compose_file_log_callback(gui_log: LogCallback, run_logger: RunLogger) -> L
         gui_log(worker_id, run_logger.log(prefix + message))
 
     return _log
+
+
+def _build_output_paths_map(config: AppConfig, gene_files: list[Path]) -> dict[Path, OutputPaths]:
+    stem_occurrences = Counter(
+        (file.relative_to(config.input_dir).parent, file.stem) for file in gene_files
+    )
+    return {
+        file: build_output_paths(
+            config.input_dir,
+            config.output_dir,
+            file,
+            config.download_type,
+            disambiguate_suffix=stem_occurrences[(file.relative_to(config.input_dir).parent, file.stem)] > 1,
+        )
+        for file in gene_files
+    }
 
 
 def _translated_output_for_skip(output_paths: OutputPaths, enable_translation: bool) -> Path | None:

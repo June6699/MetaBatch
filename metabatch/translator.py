@@ -29,6 +29,20 @@ class TranslationError(Exception):
     """Raised when the translation API fails."""
 
 
+RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
+
+
+class _InflightCall:
+    """Shared state for concurrent translate() calls on the same source text."""
+
+    __slots__ = ("done", "error", "result")
+
+    def __init__(self) -> None:
+        self.done = threading.Event()
+        self.error: BaseException | None = None
+        self.result = ""
+
+
 def fetch_available_models(
     base_url: str,
     api_key: str,
@@ -146,6 +160,7 @@ class OpenAICompatibleTranslator(Translator):
         self._timeout_seconds = timeout_seconds
         self._proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else None
         self._cache: dict[str, str] = {}
+        self._inflight: dict[str, _InflightCall] = {}
         self._lock = threading.Lock()
         self._last_request_at = 0.0
 
@@ -158,15 +173,40 @@ class OpenAICompatibleTranslator(Translator):
             cached = self._cache.get(source)
             if cached is not None:
                 return cached
+            call = self._inflight.get(source)
+            if call is None:
+                call = _InflightCall()
+                self._inflight[source] = call
+                owner = True
+            else:
+                owner = False
 
-        translated = self._translate_with_retries(source)
+        if not owner:
+            # 并发 worker 命中同一词条时，跟随首个请求而不是重复调用 API。
+            call.done.wait()
+            if call.error is not None:
+                raise TranslationError(f"翻译失败：{call.error}") from call.error
+            return call.result
+
+        try:
+            translated = self._translate_with_retries(source)
+        except BaseException as exc:
+            call.error = exc
+            with self._lock:
+                self._inflight.pop(source, None)
+            call.done.set()
+            raise
         with self._lock:
             self._cache[source] = translated
+            self._inflight.pop(source, None)
+        call.result = translated
+        call.done.set()
         return translated
 
     def _translate_with_retries(self, text: str) -> str:
         last_error: Exception | None = None
         for attempt in range(1, self._max_retries + 1):
+            response: requests.Response | None = None
             try:
                 self._respect_rate_limit()
                 response = requests.post(
@@ -176,25 +216,39 @@ class OpenAICompatibleTranslator(Translator):
                     proxies=self._proxies,
                     timeout=self._timeout_seconds,
                 )
-
-                if response.status_code in {429, 500, 502, 503, 504}:
-                    raise TranslationError(
+            except requests.RequestException as exc:
+                last_error = exc
+            else:
+                if response.status_code in RETRYABLE_STATUS_CODES:
+                    last_error = TranslationError(
                         f"翻译接口暂时不可用，HTTP {response.status_code}: {response.text[:300]}"
                     )
-                response.raise_for_status()
+                elif response.status_code >= 400:
+                    # 4xx 属于配置/鉴权问题，重试也不会成功，直接失败。
+                    raise TranslationError(
+                        f"翻译请求被拒绝，HTTP {response.status_code}: {response.text[:300]}"
+                    ) from None
+                else:
+                    translated = self._extract_message_content(_response_json(response, "翻译接口")).strip()
+                    if translated:
+                        return translated
+                    last_error = TranslationError("翻译接口返回了空结果。")
 
-                payload = _response_json(response, "翻译接口")
-                translated = self._extract_message_content(payload).strip()
-                if not translated:
-                    raise TranslationError("翻译接口返回了空结果。")
-                return translated
-            except (requests.RequestException, TranslationError) as exc:
-                last_error = exc
-                if attempt >= self._max_retries:
-                    break
-                time.sleep(min(2 ** (attempt - 1), 8))
+            if attempt < self._max_retries:
+                time.sleep(self._retry_delay(attempt, response))
 
         raise TranslationError(f"翻译失败：{last_error}") from last_error
+
+    @staticmethod
+    def _retry_delay(attempt: int, response: requests.Response | None) -> float:
+        if response is not None:
+            retry_after = response.headers.get("Retry-After")
+            if retry_after:
+                try:
+                    return min(max(float(retry_after), 0), 30)
+                except ValueError:
+                    pass
+        return min(2 ** (attempt - 1), 8)
 
     def _respect_rate_limit(self) -> None:
         with self._lock:
@@ -210,7 +264,7 @@ class OpenAICompatibleTranslator(Translator):
     def _payload(self, text: str) -> dict[str, Any]:
         messages = [{"role": "user", "content": text}]
         if self._api_format is ApiFormat.ANTHROPIC_MESSAGES:
-            return {"model": self._model, "max_tokens": 256, "system": self.SYSTEM_PROMPT, "messages": messages}
+            return {"model": self._model, "max_tokens": 1024, "system": self.SYSTEM_PROMPT, "messages": messages}
         if self._api_format is ApiFormat.OPENAI_RESPONSES:
             return {
                 "model": self._model,

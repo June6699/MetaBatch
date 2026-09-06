@@ -107,7 +107,11 @@ class MetascapeClient:
         try:
             self._log(log_callback, f"打开 Metascape：{self.HOME_URL}")
             page.goto(self.HOME_URL, wait_until="domcontentloaded", timeout=timeout_seconds * 1000)
-            page.wait_for_load_state("networkidle", timeout=30_000)
+            try:
+                page.wait_for_load_state("networkidle", timeout=30_000)
+            except PlaywrightTimeoutError:
+                # Metascape 存在长连接时 networkidle 可能永不触发，这里只是尽力等待，不应让整个文件失败。
+                self._log(log_callback, "等待 networkidle 超时，继续执行页面流程。")
 
             self._maybe_click_first(page, self.EXPRESS_TAB_SELECTORS, stop_event, log_callback, "Express Analysis 页签")
             textbox, textbox_selector = self._find_first_visible(

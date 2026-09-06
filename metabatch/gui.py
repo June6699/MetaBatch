@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import sys
+import threading
 from html import escape
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QObject, Qt, QThread, Signal
+from PySide6.QtCore import QObject, QThread, Signal
 from PySide6.QtGui import QFont, QIcon
 from PySide6.QtWidgets import (
     QApplication,
@@ -44,10 +45,24 @@ def _parse_proxy_port(text: str) -> int | None:
     value = text.strip()
     if not value:
         return None
-    port = int(value)
+    try:
+        port = int(value)
+    except ValueError:
+        raise ValueError("代理端口必须是 1-65535 之间的整数。") from None
     if not 1 <= port <= 65535:
         raise ValueError("代理端口必须在 1-65535 之间。")
     return port
+
+
+def _parse_concurrency(text: str) -> int:
+    value = text.strip() or "5"
+    try:
+        number = int(value)
+    except ValueError:
+        raise ValueError("并发数量必须是 1-32 之间的整数。") from None
+    if not 1 <= number <= 32:
+        raise ValueError("并发数量必须在 1-32 之间。")
+    return number
 
 
 def _build_config(values: dict[str, Any]) -> AppConfig:
@@ -62,7 +77,7 @@ def _build_config(values: dict[str, Any]) -> AppConfig:
     auth_field = str(values.get("auth_field", "ANTHROPIC_AUTH_TOKEN")).strip() or "ANTHROPIC_AUTH_TOKEN"
     proxy_host = str(values.get("proxy_host", "127.0.0.1")).strip() or "127.0.0.1"
     proxy_port = _parse_proxy_port(str(values.get("proxy_port", "")).strip())
-    concurrency = max(1, min(int(values.get("concurrency", 5)), 32))
+    concurrency = _parse_concurrency(str(values.get("concurrency", "")))
 
     if not input_dir.exists() or not input_dir.is_dir():
         raise ValueError("请输入存在的基因列表文件夹路径。")
@@ -121,8 +136,6 @@ class WorkflowWorker(QObject):
         super().__init__()
         self._config = config
         self._controller = controller
-        import threading
-
         self._stop_event = threading.Event()
 
     def run(self) -> None:
@@ -269,6 +282,8 @@ class MainWindow(QMainWindow):
         self._worker_log_outputs: dict[int, ColoredLogView] = {}
         self._current_worker_count = 0
         self._worker_progress_cards: dict[int, dict[str, object]] = {}
+        self._translation_enabled = False
+        self._threads_pending_close = 0
 
         self._build_ui()
         self._load_settings_into_ui()
@@ -651,7 +666,6 @@ class MainWindow(QMainWindow):
 
     def _build_profile_from_form(self, name: str) -> SavedProfile:
         values = self._collect_form_values()
-        concurrency = int(str(values["concurrency"]).strip() or "5")
         return SavedProfile(
             name=name,
             input_dir=str(values["input_dir"]).strip(),
@@ -669,7 +683,7 @@ class MainWindow(QMainWindow):
             translation_connection_mode=str(values["translation_connection_mode"]),
             proxy_host=str(values["proxy_host"]).strip(),
             proxy_port=_parse_proxy_port(str(values["proxy_port"])),
-            concurrency=max(1, min(concurrency, 32)),
+            concurrency=_parse_concurrency(str(values["concurrency"])),
         )
 
     def _persist_settings(self) -> None:
@@ -739,7 +753,11 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "配置错误", f"配置“{name}”已存在，请换一个名称。")
             return False
 
-        self._settings.profiles[name] = self._build_profile_from_form(name)
+        try:
+            self._settings.profiles[name] = self._build_profile_from_form(name)
+        except ValueError as exc:
+            QMessageBox.critical(self, "配置错误", str(exc))
+            return False
         self._settings.last_profile_name = name
         self._persist_settings()
         self._load_settings_into_ui()
@@ -892,6 +910,7 @@ class MainWindow(QMainWindow):
 
         self.start_button.setEnabled(False)
         self.stop_button.setEnabled(True)
+        self._translation_enabled = config.enable_translation
 
         self._worker_thread = QThread(self)
         self._worker = WorkflowWorker(config, WorkflowController())
@@ -958,12 +977,12 @@ class MainWindow(QMainWindow):
     def _on_done(self, results: list[TaskResult]) -> None:
         self.append_log(None, _build_summary(results))
         self.batch_progress.setValue(100)
-        self.batch_progress_text.setText(self.batch_progress_text.text() if self.batch_progress_text.text() != "0/0 (0%)" else "0/0 (0%)")
         self.analysis_progress.setValue(100)
-        self.translation_progress.setValue(100)
         self.status_label.setText("状态：处理结束")
         self.analysis_status_label.setText("Metascape 分析进度：全部任务已结束")
-        self.translation_status_label.setText("翻译进度：全部任务已结束")
+        if self._translation_enabled:
+            self.translation_progress.setValue(100)
+            self.translation_status_label.setText("翻译进度：全部任务已结束")
         self.start_button.setEnabled(True)
         self.stop_button.setEnabled(False)
 
@@ -1029,14 +1048,31 @@ class MainWindow(QMainWindow):
             last_status.setText(f"最近状态：{status}")
 
     def closeEvent(self, event) -> None:  # noqa: N802
-        if self._worker is not None:
-            self._worker.request_stop()
+        running_threads = [
+            thread
+            for thread in (self._worker_thread, self._translation_probe_thread)
+            if thread is not None and thread.isRunning()
+        ]
+        if running_threads:
+            # 后台线程仍在运行时直接退出会导致 QThread 销毁崩溃：请求停止后隐藏窗口，
+            # 等全部相关线程结束再真正退出应用。
+            if self._worker is not None:
+                self._worker.request_stop()
+            event.ignore()
+            self.hide()
+            self._threads_pending_close = len(running_threads)
+            for thread in running_threads:
+                thread.finished.connect(self._on_close_thread_finished)
+            return
         super().closeEvent(event)
+
+    def _on_close_thread_finished(self) -> None:
+        self._threads_pending_close = max(0, self._threads_pending_close - 1)
+        if self._threads_pending_close == 0:
+            QApplication.instance().quit()
 
 
 def run_app() -> None:
-    QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
-    QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
     app = QApplication.instance() or QApplication(sys.argv)
     app.setApplicationName("MetaBatch")
     app.setWindowIcon(QIcon(str(ensure_app_icon())))

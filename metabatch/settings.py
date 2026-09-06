@@ -128,10 +128,14 @@ class SettingsStore:
             "profiles": {name: asdict(profile) for name, profile in settings.profiles.items()},
             "last_profile_name": settings.last_profile_name,
         }
-        self._path.write_text(
+        # 先写临时文件再替换，避免写入中途崩溃损坏配置（会丢失全部配置与 API Key）。
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = self._path.with_name(self._path.name + ".tmp")
+        tmp_path.write_text(
             json.dumps(payload, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
+        tmp_path.replace(self._path)
 
 
 def _parse_proxy_port(value: object) -> int | None:

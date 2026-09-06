@@ -1,5 +1,21 @@
 # Update Log
 
+## 2026-09-06
+
+- `Fix`: 同一目录下同名不同扩展名的输入文件（如 `a.txt` 与 `a.xlsx`）不再互相覆盖，输出名会追加原扩展名（`a_txt_metascape.xlsx` / `a_xlsx_metascape.xlsx`）。
+- `Fix`: 补上文件之间的随机 5~10 秒间隔（可被停止事件打断），多并发下不再连续轰炸 Metascape。
+- `Fix`: 关闭窗口时若后台线程仍在运行，现在会请求停止并等待线程退出后再关闭，避免 `QThread: Destroyed while thread is still running` 崩溃。
+- `Fix`: 翻译 API 对 4xx（鉴权/参数错误）不再无意义重试，立即失败；429/5xx 仍然指数退避重试并尊重 `Retry-After`。
+- `Fix`: 并发 worker 翻译相同词条时共享同一个在途请求，不再重复调用翻译 API。
+- `Fix`: 输入 txt/csv/tsv 支持 UTF-8 BOM 与 GBK/GB2312 编码，无法解码时报出可读错误而不是 `UnicodeDecodeError`。
+- `Fix`: Metascape 首页 `networkidle` 等待超时不再导致整个文件失败。
+- `Fix`: 配置文件改为临时文件+原子替换写入，写入中途崩溃不再损坏全部配置。
+- `Fix`: Anthropic `max_tokens` 由 256 提升到 1024，长富集描述不再被截断。
+- `Update`: 翻译完成后不再重复打开/保存一次 Excel 做列宽调整。
+- `Update`: 并发数、代理端口输入非法时给出中文提示；“保存配置”也会捕获并提示这些错误。
+- `Update`: 移除 Qt6 已废弃的 `AA_EnableHighDpiScaling` / `AA_UseHighDpiPixmaps` 设置（Qt6 默认启用高 DPI）。
+- `Update`: `requirements.txt` 移除已弃用的 PySimpleGUI。
+
 ## 2026-06-29
 
 - `Add`: MetaBatch 迁移到 PySide6 主界面，解决 Windows 下字体发虚问题。

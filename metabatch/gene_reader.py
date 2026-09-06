@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import re
+from io import StringIO
 from pathlib import Path
 from typing import Iterable, Sequence
 
@@ -32,7 +33,7 @@ def discover_gene_files(input_dir: Path) -> list[Path]:
 def read_gene_list(path: Path, column_selector: str | None = None) -> list[str]:
     suffix = path.suffix.lower()
     if suffix == ".txt":
-        return _normalize_values(path.read_text(encoding="utf-8").splitlines())
+        return _normalize_values(_decode_text(path).splitlines())
     if suffix in {".csv", ".tsv"}:
         delimiter = "," if suffix == ".csv" else "\t"
         return _read_delimited(path, delimiter, column_selector)
@@ -50,6 +51,17 @@ def _normalize_values(values: Iterable[object]) -> list[str]:
         if text:
             genes.append(text)
     return genes
+
+
+def _decode_text(path: Path) -> str:
+    # Windows 下常见 UTF-8 BOM 与 GBK/GB2312 编码文件，utf-8-sig 兼容前两者之外的情况交给 gb18030 兜底。
+    data = path.read_bytes()
+    for encoding in ("utf-8-sig", "gb18030"):
+        try:
+            return data.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    raise GeneReadError(f"无法解码文件内容，请将文件另存为 UTF-8 编码：{path.name}")
 
 
 def _looks_like_generated_result(path: Path) -> bool:
@@ -109,8 +121,7 @@ def _resolve_column_index(
 
 
 def _read_delimited(path: Path, delimiter: str, column_selector: str | None) -> list[str]:
-    with path.open("r", encoding="utf-8", newline="") as handle:
-        rows = list(csv.reader(handle, delimiter=delimiter))
+    rows = list(csv.reader(StringIO(_decode_text(path)), delimiter=delimiter))
 
     if not rows:
         return []
