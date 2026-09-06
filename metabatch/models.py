@@ -61,6 +61,47 @@ class TaskStatus(str, Enum):
     STOPPED = "stopped"
 
 
+@dataclass(frozen=True)
+class TranslationTarget:
+    """翻译目标语言定义：界面显示名、提示词用语与 Excel 列名。"""
+
+    code: str
+    label_zh: str
+    label_en: str
+    prompt_name: str
+    column_header: str
+
+
+# 不提供 English 选项：Metascape 的 Description 本身就是英文。
+TRANSLATION_TARGETS: tuple[TranslationTarget, ...] = (
+    TranslationTarget("zh_cn", "简体中文", "Simplified Chinese", "Simplified Chinese", "中文描述"),
+    TranslationTarget("zh_tw", "繁體中文", "Traditional Chinese", "Traditional Chinese", "繁體中文"),
+    TranslationTarget("ja", "日语", "Japanese", "Japanese", "日本語"),
+    TranslationTarget("ko", "韩语", "Korean", "Korean", "한국어"),
+    TranslationTarget("fr", "法语", "French", "French", "Français"),
+    TranslationTarget("de", "德语", "German", "German", "Deutsch"),
+    TranslationTarget("es", "西班牙语", "Spanish", "Spanish", "Español"),
+    TranslationTarget("pt", "葡萄牙语", "Portuguese", "Portuguese", "Português"),
+    TranslationTarget("ru", "俄语", "Russian", "Russian", "Русский"),
+    TranslationTarget("it", "意大利语", "Italian", "Italian", "Italiano"),
+)
+
+DEFAULT_TRANSLATION_TARGET = "zh_cn"
+
+
+def normalize_translation_target(value: object) -> str:
+    code = str(value or "").strip()
+    for target in TRANSLATION_TARGETS:
+        if target.code == code:
+            return code
+    return DEFAULT_TRANSLATION_TARGET
+
+
+def translation_target_by_code(code: str) -> TranslationTarget:
+    normalized = normalize_translation_target(code)
+    return next(target for target in TRANSLATION_TARGETS if target.code == normalized)
+
+
 @dataclass(slots=True)
 class AppConfig:
     input_dir: Path
@@ -73,6 +114,7 @@ class AppConfig:
     api_model: str = ""
     api_format: ApiFormat = ApiFormat.ANTHROPIC_MESSAGES
     auth_field: str = "ANTHROPIC_AUTH_TOKEN"
+    translation_target: str = DEFAULT_TRANSLATION_TARGET
     input_column: str = ""
     headless: bool = True
     metascape_connection_mode: ConnectionMode = ConnectionMode.DIRECT

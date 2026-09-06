@@ -9,6 +9,7 @@ from typing import Iterable, Sequence
 import xlrd
 from openpyxl import load_workbook
 
+from .i18n import tr
 from .paths import is_generated_result_path
 
 SUPPORTED_INPUT_SUFFIXES = {".txt", ".csv", ".tsv", ".xlsx", ".xls"}
@@ -41,7 +42,7 @@ def read_gene_list(path: Path, column_selector: str | None = None) -> list[str]:
         return _read_xlsx(path, column_selector)
     if suffix == ".xls":
         return _read_xls(path, column_selector)
-    raise GeneReadError(f"不支持的输入格式：{path.suffix}")
+    raise GeneReadError(tr("不支持的输入格式：{suffix}").format(suffix=path.suffix))
 
 
 def _normalize_values(values: Iterable[object]) -> list[str]:
@@ -61,7 +62,7 @@ def _decode_text(path: Path) -> str:
             return data.decode(encoding)
         except UnicodeDecodeError:
             continue
-    raise GeneReadError(f"无法解码文件内容，请将文件另存为 UTF-8 编码：{path.name}")
+    raise GeneReadError(tr("无法解码文件内容，请将文件另存为 UTF-8 编码：{name}").format(name=path.name))
 
 
 def _looks_like_generated_result(path: Path) -> bool:
@@ -101,7 +102,7 @@ def _resolve_column_index(
     if token.isdigit():
         index = int(token) - 1
         if index < 0:
-            raise GeneReadError("列号必须从 1 开始。")
+            raise GeneReadError(tr("列号必须从 1 开始。"))
         return index, False
 
     if re.fullmatch(r"[A-Za-z]+", token):
@@ -111,13 +112,13 @@ def _resolve_column_index(
         return excel_index - 1, False
 
     if header_row is None:
-        raise GeneReadError("按表头名选择列时需要可读取表头的结构化文件。")
+        raise GeneReadError(tr("按表头名选择列时需要可读取表头的结构化文件。"))
 
     normalized_headers = [str(cell).strip() for cell in header_row]
     try:
         return normalized_headers.index(token), True
     except ValueError as exc:
-        raise GeneReadError(f"未找到名为“{token}”的列。") from exc
+        raise GeneReadError(tr("未找到名为“{name}”的列。").format(name=token)) from exc
 
 
 def _read_delimited(path: Path, delimiter: str, column_selector: str | None) -> list[str]:

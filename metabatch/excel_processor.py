@@ -7,9 +7,12 @@ from typing import Callable
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 
+from .i18n import tr
 from .translator import Translator
 
 RowProgressCallback = Callable[[int, int], None]
+
+DEFAULT_TARGET_HEADER = "中文描述"
 
 
 class ExcelProcessingError(Exception):
@@ -21,25 +24,30 @@ def translate_workbook(
     translator: Translator,
     stop_event: Event | None = None,
     progress_callback: RowProgressCallback | None = None,
+    target_header: str = DEFAULT_TARGET_HEADER,
 ) -> Path:
     workbook = load_workbook(workbook_path)
     try:
         if "Enrichment" not in workbook.sheetnames:
-            raise ExcelProcessingError("结果文件中未找到 Enrichment 工作表，可能因为基因过少未产生富集结果。")
+            raise ExcelProcessingError(
+                tr("结果文件中未找到 Enrichment 工作表，可能因为基因过少未产生富集结果。")
+            )
 
         sheet = workbook["Enrichment"]
         description_column = _find_header_column(sheet, "Description")
-        chinese_column = _find_header_column(sheet, "中文描述", raise_if_missing=False)
-        if chinese_column is not None:
-            raise ExcelProcessingError("该文件已经存在“中文描述”列，已跳过以避免重复写入。")
+        existing_column = _find_header_column(sheet, target_header, raise_if_missing=False)
+        if existing_column is not None:
+            raise ExcelProcessingError(
+                tr("该文件已经存在“{column}”列，已跳过以避免重复写入。").format(column=target_header)
+            )
 
         target_column = sheet.max_column + 1
-        sheet.cell(row=1, column=target_column, value="中文描述")
+        sheet.cell(row=1, column=target_column, value=target_header)
 
         total_rows = max(sheet.max_row - 1, 0)
         for offset, row_index in enumerate(range(2, sheet.max_row + 1), start=1):
             if stop_event and stop_event.is_set():
-                raise ExcelProcessingError("用户已停止任务。")
+                raise ExcelProcessingError(tr("用户已停止任务。"))
 
             description = sheet.cell(row=row_index, column=description_column).value
             translated = translator.translate("" if description is None else str(description))
@@ -48,7 +56,7 @@ def translate_workbook(
             if progress_callback:
                 progress_callback(offset, total_rows)
 
-        _finalize_workbook_layout(workbook, sheet_name="Enrichment", auto_fit_headers=["Description", "中文描述"])
+        _finalize_workbook_layout(workbook, sheet_name="Enrichment", auto_fit_headers=["Description", target_header])
         workbook.save(workbook_path)
         return workbook_path
     finally:
@@ -63,8 +71,10 @@ def finalize_workbook_layout(
     workbook = load_workbook(workbook_path)
     try:
         if sheet_name not in workbook.sheetnames:
-            raise ExcelProcessingError("结果文件中未找到 Enrichment 工作表，可能因为基因过少未产生富集结果。")
-        headers = auto_fit_headers or ["Description", "中文描述"]
+            raise ExcelProcessingError(
+                tr("结果文件中未找到 Enrichment 工作表，可能因为基因过少未产生富集结果。")
+            )
+        headers = auto_fit_headers or [DEFAULT_TARGET_HEADER, "Description"]
         _finalize_workbook_layout(workbook, sheet_name=sheet_name, auto_fit_headers=headers)
         workbook.save(workbook_path)
         return workbook_path
@@ -79,7 +89,7 @@ def _find_header_column(sheet, header_name: str, raise_if_missing: bool = True) 
             return column_index
 
     if raise_if_missing:
-        raise ExcelProcessingError(f"未找到列“{header_name}”。")
+        raise ExcelProcessingError(tr("未找到列“{header}”。").format(header=header_name))
     return None
 
 

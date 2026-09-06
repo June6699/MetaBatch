@@ -6,7 +6,16 @@ from typing import Any
 
 import requests
 
+from .i18n import tr
 from .models import ApiFormat
+
+DEFAULT_TARGET_LANGUAGE = "Simplified Chinese"
+
+SYSTEM_PROMPT_TEMPLATE = (
+    "You translate biomedical enrichment term descriptions from English to {language}. "
+    "Return only the translated text. Preserve gene symbols, pathway identifiers, "
+    "abbreviations, and punctuation when needed."
+)
 
 
 def _coerce_api_format(value: str | ApiFormat) -> ApiFormat:
@@ -54,7 +63,7 @@ def fetch_available_models(
     """Return model identifiers exposed by an OpenAI-compatible ``/models`` endpoint."""
     key = api_key.strip()
     if not key:
-        raise TranslationError("翻译 API Key 不能为空。")
+        raise TranslationError(tr("翻译 API Key 不能为空。"))
 
     url = OpenAICompatibleTranslator._build_models_url(base_url, _coerce_api_format(api_format))
     proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else None
@@ -66,13 +75,13 @@ def fetch_available_models(
             timeout=timeout_seconds,
         )
         response.raise_for_status()
-        payload = _response_json(response, "模型列表接口")
+        payload = _response_json(response, tr("模型列表接口"))
     except requests.RequestException as exc:
-        raise TranslationError(f"获取模型失败：{exc}") from exc
+        raise TranslationError(tr("获取模型失败：{error}").format(error=exc)) from exc
 
     entries = payload.get("data", payload.get("models", [])) if isinstance(payload, dict) else []
     if not isinstance(entries, list):
-        raise TranslationError("模型列表接口返回格式异常，未找到 data/models 数组。")
+        raise TranslationError(tr("模型列表接口返回格式异常，未找到 data/models 数组。"))
 
     models: set[str] = set()
     for entry in entries:
@@ -85,7 +94,7 @@ def fetch_available_models(
                     models.add(value.strip())
                     break
     if not models:
-        raise TranslationError("模型列表接口未返回可用模型。")
+        raise TranslationError(tr("模型列表接口未返回可用模型。"))
     return sorted(models, key=str.casefold)
 
 
@@ -110,19 +119,23 @@ def test_translation_connection(
         proxy_url=proxy_url,
     )
     translator.translate("cell cycle")
-    return f"连接成功：模型 {model.strip()} 已响应。"
+    return tr("连接成功：模型 {model} 已响应。").format(model=model.strip())
 
 
 def _response_json(response: requests.Response, operation: str) -> dict[str, Any]:
     try:
         payload = response.json()
     except requests.JSONDecodeError as exc:
-        content_type = response.headers.get("content-type", "未知")
+        content_type = response.headers.get("content-type", tr("未知"))
         raise TranslationError(
-            f"{operation}未返回 JSON（HTTP {response.status_code}，Content-Type: {content_type}）。"
+            tr("{operation}未返回 JSON（HTTP {status}，Content-Type: {content_type}）。").format(
+                operation=operation,
+                status=response.status_code,
+                content_type=content_type,
+            )
         ) from exc
     if not isinstance(payload, dict):
-        raise TranslationError(f"{operation}返回格式异常，预期 JSON 对象。")
+        raise TranslationError(tr("{operation}返回格式异常，预期 JSON 对象。").format(operation=operation))
     return payload
 
 
@@ -132,12 +145,6 @@ class Translator:
 
 
 class OpenAICompatibleTranslator(Translator):
-    SYSTEM_PROMPT = (
-        "You translate biomedical enrichment term descriptions from English to "
-        "Simplified Chinese. Return only the translated Chinese text. Preserve gene "
-        "symbols, pathway identifiers, abbreviations, and punctuation when needed."
-    )
-
     def __init__(
         self,
         base_url: str,
@@ -145,6 +152,7 @@ class OpenAICompatibleTranslator(Translator):
         model: str,
         api_format: str | ApiFormat = ApiFormat.ANTHROPIC_MESSAGES,
         auth_field: str = "ANTHROPIC_AUTH_TOKEN",
+        target_language: str = DEFAULT_TARGET_LANGUAGE,
         request_interval_seconds: float = 0.1,
         max_retries: int = 4,
         timeout_seconds: int = 60,
@@ -155,6 +163,9 @@ class OpenAICompatibleTranslator(Translator):
         self._url = self._build_url(base_url, self._api_format)
         self._api_key = api_key.strip()
         self._model = model.strip()
+        self._system_prompt = SYSTEM_PROMPT_TEMPLATE.format(
+            language=target_language.strip() or DEFAULT_TARGET_LANGUAGE
+        )
         self._request_interval_seconds = request_interval_seconds
         self._max_retries = max_retries
         self._timeout_seconds = timeout_seconds
@@ -185,7 +196,7 @@ class OpenAICompatibleTranslator(Translator):
             # 并发 worker 命中同一词条时，跟随首个请求而不是重复调用 API。
             call.done.wait()
             if call.error is not None:
-                raise TranslationError(f"翻译失败：{call.error}") from call.error
+                raise TranslationError(tr("翻译失败：{error}").format(error=call.error)) from call.error
             return call.result
 
         try:
@@ -221,23 +232,27 @@ class OpenAICompatibleTranslator(Translator):
             else:
                 if response.status_code in RETRYABLE_STATUS_CODES:
                     last_error = TranslationError(
-                        f"翻译接口暂时不可用，HTTP {response.status_code}: {response.text[:300]}"
+                        tr("翻译接口暂时不可用，HTTP {status}: {body}").format(
+                            status=response.status_code, body=response.text[:300]
+                        )
                     )
                 elif response.status_code >= 400:
                     # 4xx 属于配置/鉴权问题，重试也不会成功，直接失败。
                     raise TranslationError(
-                        f"翻译请求被拒绝，HTTP {response.status_code}: {response.text[:300]}"
+                        tr("翻译请求被拒绝，HTTP {status}: {body}").format(
+                            status=response.status_code, body=response.text[:300]
+                        )
                     ) from None
                 else:
-                    translated = self._extract_message_content(_response_json(response, "翻译接口")).strip()
+                    translated = self._extract_message_content(_response_json(response, tr("翻译接口"))).strip()
                     if translated:
                         return translated
-                    last_error = TranslationError("翻译接口返回了空结果。")
+                    last_error = TranslationError(tr("翻译接口返回了空结果。"))
 
             if attempt < self._max_retries:
                 time.sleep(self._retry_delay(attempt, response))
 
-        raise TranslationError(f"翻译失败：{last_error}") from last_error
+        raise TranslationError(tr("翻译失败：{error}").format(error=last_error)) from last_error
 
     @staticmethod
     def _retry_delay(attempt: int, response: requests.Response | None) -> float:
@@ -264,25 +279,25 @@ class OpenAICompatibleTranslator(Translator):
     def _payload(self, text: str) -> dict[str, Any]:
         messages = [{"role": "user", "content": text}]
         if self._api_format is ApiFormat.ANTHROPIC_MESSAGES:
-            return {"model": self._model, "max_tokens": 1024, "system": self.SYSTEM_PROMPT, "messages": messages}
+            return {"model": self._model, "max_tokens": 1024, "system": self._system_prompt, "messages": messages}
         if self._api_format is ApiFormat.OPENAI_RESPONSES:
             return {
                 "model": self._model,
                 "temperature": 0,
-                "instructions": self.SYSTEM_PROMPT,
+                "instructions": self._system_prompt,
                 "input": [{"role": "user", "content": [{"type": "input_text", "text": text}]}],
             }
         return {
             "model": self._model,
             "temperature": 0,
-            "messages": [{"role": "system", "content": self.SYSTEM_PROMPT}, *messages],
+            "messages": [{"role": "system", "content": self._system_prompt}, *messages],
         }
 
     @staticmethod
     def _build_api_root(base_url: str) -> str:
         value = base_url.strip().rstrip("/")
         if not value:
-            raise TranslationError("翻译 API Base URL 不能为空。")
+            raise TranslationError(tr("翻译 API Base URL 不能为空。"))
         return value
 
     @classmethod
@@ -319,7 +334,7 @@ class OpenAICompatibleTranslator(Translator):
             if isinstance(content, list):
                 texts = [item.get("text", "") for item in content if isinstance(item, dict) and item.get("type") == "text"]
                 return "".join(texts)
-            raise TranslationError(f"Anthropic 接口返回格式异常：{payload}")
+            raise TranslationError(tr("Anthropic 接口返回格式异常：{payload}").format(payload=payload))
 
         if self._api_format is ApiFormat.OPENAI_RESPONSES:
             output_text = payload.get("output_text", "")
@@ -341,11 +356,11 @@ class OpenAICompatibleTranslator(Translator):
                     )
                 if texts:
                     return "".join(texts)
-            raise TranslationError(f"Responses 接口返回格式异常：{payload}")
+            raise TranslationError(tr("Responses 接口返回格式异常：{payload}").format(payload=payload))
 
         choices = payload.get("choices")
         if not choices:
-            raise TranslationError(f"翻译接口未返回 choices：{payload}")
+            raise TranslationError(tr("翻译接口未返回 choices：{payload}").format(payload=payload))
         message = choices[0].get("message", {})
         content = message.get("content", "")
         if isinstance(content, str):
@@ -353,4 +368,4 @@ class OpenAICompatibleTranslator(Translator):
         if isinstance(content, list):
             texts = [item.get("text", "") for item in content if isinstance(item, dict)]
             return "".join(texts)
-        raise TranslationError(f"无法解析翻译结果：{payload}")
+        raise TranslationError(tr("无法解析翻译结果：{payload}").format(payload=payload))

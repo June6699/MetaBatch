@@ -4,7 +4,14 @@ import json
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from .models import ApiFormat, AppConfig, ConnectionMode, DownloadType
+from .i18n import UI_LANGUAGE_ZH, tr
+from .models import (
+    ApiFormat,
+    AppConfig,
+    ConnectionMode,
+    DownloadType,
+    normalize_translation_target,
+)
 from .runtime import get_app_data_dir
 
 CONFIG_FILENAME = "metabatch_config.json"
@@ -24,6 +31,7 @@ class SavedProfile:
     api_model: str = ""
     api_format: str = ApiFormat.ANTHROPIC_MESSAGES.value
     auth_field: str = "ANTHROPIC_AUTH_TOKEN"
+    translation_target: str = "zh_cn"
     headless: bool = True
     metascape_connection_mode: str = ConnectionMode.DIRECT.value
     translation_connection_mode: str = ConnectionMode.DIRECT.value
@@ -45,6 +53,7 @@ class SavedProfile:
             api_model=config.api_model,
             api_format=config.api_format.value,
             auth_field=config.auth_field,
+            translation_target=normalize_translation_target(config.translation_target),
             headless=config.headless,
             metascape_connection_mode=config.metascape_connection_mode.value,
             translation_connection_mode=config.translation_connection_mode.value,
@@ -58,6 +67,7 @@ class SavedProfile:
 class AppSettings:
     profiles: dict[str, SavedProfile] = field(default_factory=dict)
     last_profile_name: str | None = None
+    ui_language: str = UI_LANGUAGE_ZH
 
     @classmethod
     def default(cls) -> "AppSettings":
@@ -100,6 +110,7 @@ class SettingsStore:
                         str(payload.get("api_format", ApiFormat.ANTHROPIC_MESSAGES.value))
                     ).value,
                     auth_field=str(payload.get("auth_field", "ANTHROPIC_AUTH_TOKEN")),
+                    translation_target=normalize_translation_target(payload.get("translation_target")),
                     headless=bool(payload.get("headless", True)),
                     metascape_connection_mode=ConnectionMode.from_value(
                         str(payload.get("metascape_connection_mode", ConnectionMode.DIRECT.value))
@@ -113,20 +124,28 @@ class SettingsStore:
                 )
 
             if not profiles:
-                return AppSettings.default(), "配置文件为空，已恢复默认配置。"
+                return AppSettings.default(), tr("配置文件为空，已恢复默认配置。")
 
             last_profile_name = raw.get("last_profile_name")
             if last_profile_name not in profiles:
                 last_profile_name = next(iter(profiles))
 
-            return AppSettings(profiles=profiles, last_profile_name=last_profile_name), None
+            ui_language = str(raw.get("ui_language", UI_LANGUAGE_ZH))
+            if ui_language not in {"zh", "en"}:
+                ui_language = UI_LANGUAGE_ZH
+            return AppSettings(
+                profiles=profiles,
+                last_profile_name=last_profile_name,
+                ui_language=ui_language,
+            ), None
         except Exception:
-            return AppSettings.default(), "配置加载失败，已使用默认界面状态。"
+            return AppSettings.default(), tr("配置加载失败，已使用默认界面状态。")
 
     def save(self, settings: AppSettings) -> None:
         payload = {
             "profiles": {name: asdict(profile) for name, profile in settings.profiles.items()},
             "last_profile_name": settings.last_profile_name,
+            "ui_language": settings.ui_language,
         }
         # 先写临时文件再替换，避免写入中途崩溃损坏配置（会丢失全部配置与 API Key）。
         self._path.parent.mkdir(parents=True, exist_ok=True)

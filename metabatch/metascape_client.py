@@ -10,6 +10,7 @@ from typing import Callable, Iterable
 
 from playwright.sync_api import Browser, Locator, Page, Playwright, TimeoutError as PlaywrightTimeoutError, expect, sync_playwright
 
+from .i18n import tr
 from .models import DownloadType, DownloadedArtifacts
 
 LogCallback = Callable[[str], None]
@@ -100,31 +101,31 @@ class MetascapeClient:
         extracted_dir: Path | None = None,
     ) -> DownloadedArtifacts:
         if self._browser is None:
-            raise MetascapeAutomationError("浏览器尚未启动。")
+            raise MetascapeAutomationError(tr("浏览器尚未启动。"))
 
         context = self._browser.new_context(accept_downloads=True)
         page = context.new_page()
         try:
-            self._log(log_callback, f"打开 Metascape：{self.HOME_URL}")
+            self._log(log_callback, tr("打开 Metascape：{url}").format(url=self.HOME_URL))
             page.goto(self.HOME_URL, wait_until="domcontentloaded", timeout=timeout_seconds * 1000)
             try:
                 page.wait_for_load_state("networkidle", timeout=30_000)
             except PlaywrightTimeoutError:
                 # Metascape 存在长连接时 networkidle 可能永不触发，这里只是尽力等待，不应让整个文件失败。
-                self._log(log_callback, "等待 networkidle 超时，继续执行页面流程。")
+                self._log(log_callback, tr("等待 networkidle 超时，继续执行页面流程。"))
 
-            self._maybe_click_first(page, self.EXPRESS_TAB_SELECTORS, stop_event, log_callback, "Express Analysis 页签")
+            self._maybe_click_first(page, self.EXPRESS_TAB_SELECTORS, stop_event, log_callback, tr("Express Analysis 页签"))
             textbox, textbox_selector = self._find_first_visible(
                 page,
                 self.TEXTBOX_SELECTORS,
                 timeout_seconds=60,
                 stop_event=stop_event,
             )
-            self._log(log_callback, f"已定位基因输入框：{textbox_selector}")
+            self._log(log_callback, tr("已定位基因输入框：{selector}").format(selector=textbox_selector))
             self._click_with_retry(
                 page,
                 textbox_selector,
-                "基因输入框",
+                tr("基因输入框"),
                 stop_event,
                 log_callback,
                 timeout_ms=15_000,
@@ -137,15 +138,15 @@ class MetascapeClient:
                 timeout_seconds=60,
                 stop_event=stop_event,
             )
-            self._log(log_callback, f"已定位提交按钮：{submit_selector}")
+            self._log(log_callback, tr("已定位提交按钮：{selector}").format(selector=submit_selector))
             self._click_with_retry(
                 page,
                 submit_selector,
-                "Submit 按钮",
+                tr("Submit 按钮"),
                 stop_event,
                 log_callback,
             )
-            self._report_progress(analysis_progress_callback, 5, "已提交基因列表，等待进入分析流程")
+            self._report_progress(analysis_progress_callback, 5, tr("已提交基因列表，等待进入分析流程"))
 
             express_button, express_selector = self._find_first_visible(
                 page,
@@ -153,27 +154,27 @@ class MetascapeClient:
                 timeout_seconds=60,
                 stop_event=stop_event,
             )
-            self._log(log_callback, f"已定位 Express Analysis 按钮：{express_selector}")
+            self._log(log_callback, tr("已定位 Express Analysis 按钮：{selector}").format(selector=express_selector))
             self._click_with_retry(
                 page,
                 express_selector,
-                "Express Analysis 按钮",
+                tr("Express Analysis 按钮"),
                 stop_event,
                 log_callback,
             )
-            self._report_progress(analysis_progress_callback, 10, "已启动 Express Analysis")
+            self._report_progress(analysis_progress_callback, 10, tr("已启动 Express Analysis"))
 
-            self._log(log_callback, "等待 Analysis Report Page 按钮与 Metascape 分析进度。")
+            self._log(log_callback, tr("等待 Analysis Report Page 按钮与 Metascape 分析进度。"))
             report_button, report_selector = self._wait_for_report_button(
                 page,
                 timeout_seconds=timeout_seconds,
                 stop_event=stop_event,
                 progress_callback=analysis_progress_callback,
             )
-            self._log(log_callback, f"已定位 Analysis Report Page 按钮：{report_selector}")
+            self._log(log_callback, tr("已定位 Analysis Report Page 按钮：{selector}").format(selector=report_selector))
 
             report_page = self._open_report_page(context, page, report_selector, stop_event, log_callback)
-            self._report_progress(analysis_progress_callback, 90, "已进入 Analysis Report Page，等待下载入口")
+            self._report_progress(analysis_progress_callback, 90, tr("已进入 Analysis Report Page，等待下载入口"))
 
             selectors = (
                 self.XLSX_DOWNLOAD_SELECTORS
@@ -186,14 +187,14 @@ class MetascapeClient:
                 timeout_seconds=timeout_seconds,
                 stop_event=stop_event,
             )
-            self._log(log_callback, f"已定位下载入口：{download_selector}")
+            self._log(log_callback, tr("已定位下载入口：{selector}").format(selector=download_selector))
             download_path.parent.mkdir(parents=True, exist_ok=True)
             if not self._try_direct_download(report_page, download_target, download_path):
                 with report_page.expect_download(timeout=timeout_seconds * 1000) as download_info:
                     self._click_with_retry(
                         report_page,
                         download_selector,
-                        "下载入口",
+                        tr("下载入口"),
                         stop_event,
                         log_callback,
                         timeout_ms=20_000,
@@ -203,19 +204,19 @@ class MetascapeClient:
                     download.save_as(download_path)
                 except Exception:  # noqa: BLE001
                     self._save_download_from_href(report_page, download_target, download_path)
-            self._log(log_callback, f"下载完成：{download_path}")
-            self._report_progress(analysis_progress_callback, 100, "Metascape 下载完成")
+            self._log(log_callback, tr("下载完成：{path}").format(path=download_path))
+            self._report_progress(analysis_progress_callback, 100, tr("Metascape 下载完成"))
 
             if download_type is DownloadType.XLSX_ONLY:
                 return DownloadedArtifacts(download_path=download_path, excel_path=download_path)
 
             if extracted_dir is None:
-                raise MetascapeAutomationError("Zip 模式缺少解压目录参数。")
+                raise MetascapeAutomationError(tr("Zip 模式缺少解压目录参数。"))
             extracted_dir.mkdir(parents=True, exist_ok=True)
             with zipfile.ZipFile(download_path, "r") as archive:
                 archive.extractall(extracted_dir)
             excel_path = self._find_excel_in_directory(extracted_dir)
-            self._log(log_callback, f"已从压缩包定位 Excel：{excel_path}")
+            self._log(log_callback, tr("已从压缩包定位 Excel：{path}").format(path=excel_path))
             return DownloadedArtifacts(
                 download_path=download_path,
                 excel_path=excel_path,
@@ -223,7 +224,7 @@ class MetascapeClient:
             )
         except PlaywrightTimeoutError as exc:
             raise MetascapeAutomationError(
-                f"等待 Metascape 页面元素超时，请检查网络或页面选择器。原始错误：{exc}"
+                tr("等待 Metascape 页面元素超时，请检查网络或页面选择器。原始错误：{error}").format(error=exc)
             ) from exc
         finally:
             page.close()
@@ -241,12 +242,12 @@ class MetascapeClient:
 
         while time.monotonic() < deadline:
             if stop_event.is_set():
-                raise MetascapeAutomationError("用户已停止任务。")
+                raise MetascapeAutomationError(tr("用户已停止任务。"))
 
             percent = self._read_progress_percent(page)
             if percent is not None and percent != last_percent:
                 last_percent = percent
-                self._report_progress(progress_callback, percent, f"Metascape 正在分析：{percent}%")
+                self._report_progress(progress_callback, percent, tr("Metascape 正在分析：{percent}%").format(percent=percent))
 
             for selector in self.REPORT_PAGE_SELECTORS:
                 locator = page.locator(selector).first
@@ -258,7 +259,7 @@ class MetascapeClient:
 
             page.wait_for_timeout(1000)
 
-        raise MetascapeAutomationError("等待 Analysis Report Page 按钮超时。")
+        raise MetascapeAutomationError(tr("等待 Analysis Report Page 按钮超时。"))
 
     def _open_report_page(
         self,
@@ -273,7 +274,7 @@ class MetascapeClient:
                 self._click_with_retry(
                     page,
                     report_selector,
-                    "Analysis Report Page 按钮",
+                    tr("Analysis Report Page 按钮"),
                     stop_event,
                     log_callback,
                     timeout_ms=20_000,
@@ -285,7 +286,7 @@ class MetascapeClient:
             self._click_with_retry(
                 page,
                 report_selector,
-                "Analysis Report Page 按钮",
+                tr("Analysis Report Page 按钮"),
                 stop_event,
                 log_callback,
                 timeout_ms=20_000,
@@ -305,7 +306,7 @@ class MetascapeClient:
 
         while time.monotonic() < deadline:
             if stop_event.is_set():
-                raise MetascapeAutomationError("用户已停止任务。")
+                raise MetascapeAutomationError(tr("用户已停止任务。"))
 
             for selector in selectors:
                 locator = page.locator(selector).first
@@ -318,7 +319,9 @@ class MetascapeClient:
             page.wait_for_timeout(1000)
 
         raise MetascapeAutomationError(
-            f"无法定位页面元素，候选选择器：{list(selectors)}，最后错误：{last_error}"
+            tr("无法定位页面元素，候选选择器：{selectors}，最后错误：{error}").format(
+                selectors=list(selectors), error=last_error
+            )
         )
 
     def _maybe_click_first(
@@ -362,19 +365,19 @@ class MetascapeClient:
             except Exception:  # noqa: BLE001
                 target_href = None
         if not target_href:
-            raise MetascapeAutomationError("下载入口未提供可直接获取的链接。")
+            raise MetascapeAutomationError(tr("下载入口未提供可直接获取的链接。"))
 
         resolved = urljoin(page.url, target_href)
         response = page.request.get(resolved, timeout=30_000)
         if response.status >= 400:
-            raise MetascapeAutomationError(f"直接获取下载文件失败：HTTP {response.status}")
+            raise MetascapeAutomationError(tr("直接获取下载文件失败：HTTP {status}").format(status=response.status))
         download_path.write_bytes(response.body())
 
     @staticmethod
     def _find_excel_in_directory(directory: Path) -> Path:
         candidates = sorted(directory.rglob("*.xlsx"))
         if not candidates:
-            raise MetascapeAutomationError("压缩包中未找到任何 xlsx 文件。")
+            raise MetascapeAutomationError(tr("压缩包中未找到任何 xlsx 文件。"))
 
         prioritized = sorted(
             candidates,
@@ -425,13 +428,19 @@ class MetascapeClient:
         max_attempts: int = 3,
     ) -> None:
         last_error: Exception | None = None
+        label = tr(label)
         for attempt in range(1, max_attempts + 1):
             if stop_event.is_set():
-                raise MetascapeAutomationError("用户已停止任务。")
+                raise MetascapeAutomationError(tr("用户已停止任务。"))
 
             locator = page.locator(selector).first
             try:
-                self._log(log_callback, f"{label} 点击尝试 {attempt}/{max_attempts}。")
+                self._log(
+                    log_callback,
+                    tr("{label} 点击尝试 {attempt}/{max_attempts}。").format(
+                        label=label, attempt=attempt, max_attempts=max_attempts
+                    ),
+                )
                 expect(locator).to_be_visible(timeout=timeout_ms)
                 expect(locator).to_be_enabled(timeout=timeout_ms)
                 locator.scroll_into_view_if_needed(timeout=timeout_ms)
@@ -439,22 +448,47 @@ class MetascapeClient:
                 return
             except Exception as exc:  # noqa: BLE001
                 last_error = exc
-                self._log(log_callback, f"{label} 常规点击失败，第 {attempt} 次：{exc}")
+                self._log(
+                    log_callback,
+                    tr("{label} 常规点击失败，第 {attempt} 次：{error}").format(
+                        label=label, attempt=attempt, error=exc
+                    ),
+                )
                 try:
                     locator.scroll_into_view_if_needed(timeout=timeout_ms)
                     locator.click(timeout=timeout_ms, force=True)
-                    self._log(log_callback, f"{label} 第 {attempt} 次使用 force click 成功。")
+                    self._log(
+                        log_callback,
+                        tr("{label} 第 {attempt} 次使用 force click 成功。").format(label=label, attempt=attempt),
+                    )
                     return
                 except Exception as force_exc:  # noqa: BLE001
                     last_error = force_exc
-                    self._log(log_callback, f"{label} force click 失败，第 {attempt} 次：{force_exc}")
+                    self._log(
+                        log_callback,
+                        tr("{label} force click 失败，第 {attempt} 次：{error}").format(
+                            label=label, attempt=attempt, error=force_exc
+                        ),
+                    )
                     try:
                         page.evaluate("(el) => el.click()", locator.element_handle(timeout=timeout_ms))
-                        self._log(log_callback, f"{label} 第 {attempt} 次使用 JS click 成功。")
+                        self._log(
+                            log_callback,
+                            tr("{label} 第 {attempt} 次使用 JS click 成功。").format(label=label, attempt=attempt),
+                        )
                         return
                     except Exception as js_exc:  # noqa: BLE001
                         last_error = js_exc
-                        self._log(log_callback, f"{label} JS click 失败，第 {attempt} 次：{js_exc}")
+                        self._log(
+                            log_callback,
+                            tr("{label} JS click 失败，第 {attempt} 次：{error}").format(
+                                label=label, attempt=attempt, error=js_exc
+                            ),
+                        )
                         page.wait_for_timeout(1000 * attempt)
 
-        raise MetascapeAutomationError(f"{label} 点击失败，已重试 {max_attempts} 次。最后错误：{last_error}")
+        raise MetascapeAutomationError(
+            tr("{label} 点击失败，已重试 {max_attempts} 次。最后错误：{error}").format(
+                label=label, max_attempts=max_attempts, error=last_error
+            )
+        )

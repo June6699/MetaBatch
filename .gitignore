@@ -1,15 +1,13 @@
-﻿# Directory
+# Local runtime data (contains API keys — never commit)
+metabatch_config.json*
+
+# Build artifacts
 __pycache__/
 logs/
 build/
 dist/
-dchic_projects/
-demo/
-
-# Files
-demo_verify_enrichment.xlsx
-MetaBatch.zip
-metabatch_config.json
 *.log
-*.spec
+
+# Local test data and notes
+demo/
 mission.md

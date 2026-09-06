@@ -12,9 +12,10 @@ from typing import Callable
 
 from .excel_processor import ExcelProcessingError, finalize_workbook_layout, translate_workbook
 from .gene_reader import GeneReadError, discover_gene_files, read_gene_list
+from .i18n import tr
 from .logging_utils import RunLogger, make_log_path
 from .metascape_client import MetascapeAutomationError, MetascapeClient
-from .models import AppConfig, DownloadType, TaskResult, TaskStatus
+from .models import AppConfig, DownloadType, TaskResult, TaskStatus, translation_target_by_code
 from .paths import OutputPaths, build_output_paths
 from .translator import OpenAICompatibleTranslator, TranslationError
 
@@ -34,19 +35,29 @@ class WorkflowController:
         config.output_dir.mkdir(parents=True, exist_ok=True)
         gene_files = discover_gene_files(config.input_dir)
         if not gene_files:
-            raise ValueError("输入目录中未找到受支持的基因列表文件。")
+            raise ValueError(tr("输入目录中未找到受支持的基因列表文件。"))
 
         run_logger = RunLogger(make_log_path())
         translator = self._build_translator(config)
         try:
             file_log = _compose_file_log_callback(log_callback, run_logger)
-            file_log(None, f"日志文件：{run_logger.path}")
-            file_log(None, f"并发数：{config.concurrency}")
+            file_log(None, tr("日志文件：{path}").format(path=run_logger.path))
+            file_log(None, tr("并发数：{count}").format(count=config.concurrency))
 
             results: list[TaskResult] = []
             total = len(gene_files)
-            progress_callback(0, total, "准备开始处理", 0, "等待启动", 0 if config.enable_translation else None, "翻译已关闭", None, None)
-            file_log(None, f"待处理文件数：{total}")
+            progress_callback(
+                0,
+                total,
+                tr("准备开始处理"),
+                0,
+                tr("等待启动"),
+                0 if config.enable_translation else None,
+                tr("翻译已关闭"),
+                None,
+                None,
+            )
+            file_log(None, tr("待处理文件数：{count}").format(count=total))
 
             max_workers = max(1, config.concurrency)
             output_paths_map = _build_output_paths_map(config, gene_files)
@@ -98,19 +109,24 @@ class WorkflowController:
                                     translation_elapsed_seconds=None,
                                 )
                             )
-                            file_log(worker_id, f"处理失败：{gene_file.relative_to(config.input_dir)}，原因：{exc}")
+                            file_log(
+                                worker_id,
+                                tr("处理失败：{name}，原因：{error}").format(
+                                    name=gene_file.relative_to(config.input_dir), error=exc
+                                ),
+                            )
 
             self._write_summary(config.output_dir, results)
             overall_elapsed = time.perf_counter() - overall_start_time
-            file_log(None, f"全部任务完成，总用时 {self._format_seconds(overall_elapsed)}。")
+            file_log(None, tr("全部任务完成，总用时 {duration}。").format(duration=self._format_seconds(overall_elapsed)))
             progress_callback(
                 total,
                 total,
-                "处理结束",
+                tr("处理结束"),
                 100,
-                "全部任务已结束",
+                tr("全部任务已结束"),
                 100 if config.enable_translation else None,
-                "全部翻译流程已结束" if config.enable_translation else "翻译已关闭",
+                tr("全部翻译流程已结束") if config.enable_translation else tr("翻译已关闭"),
                 None,
                 None,
             )
@@ -139,7 +155,7 @@ class WorkflowController:
         translated_path: Path | None = None
 
         if output_paths.download_path.exists():
-            message = f"检测到已有结果文件，已跳过：{output_paths.download_path}"
+            message = tr("检测到已有结果文件，已跳过：{path}").format(path=output_paths.download_path)
             log_callback(worker_id, f"[{index}/{total}] {message}")
             return TaskResult(
                 source_file=gene_file,
@@ -155,12 +171,15 @@ class WorkflowController:
         try:
             genes = read_gene_list(gene_file, config.normalized_input_column())
             if not genes:
-                raise GeneReadError("文件中未读取到任何有效基因。")
+                raise GeneReadError(tr("文件中未读取到任何有效基因。"))
 
-            log_callback(worker_id, f"[{index}/{total}] 开始处理：{relative_name}")
-            log_callback(worker_id, f"[{index}/{total}] 读取基因完成：{len(genes)} 个基因。")
+            log_callback(worker_id, f"[{index}/{total}] " + tr("开始处理：{name}").format(name=relative_name))
+            log_callback(
+                worker_id,
+                f"[{index}/{total}] " + tr("读取基因完成：{count} 个基因。").format(count=len(genes)),
+            )
             metascape_start = time.perf_counter()
-            log_callback(worker_id, f"[{index}/{total}] Metascape 开始。")
+            log_callback(worker_id, f"[{index}/{total}] " + tr("Metascape 开始。"))
 
             with MetascapeClient(
                 headless=config.headless,
@@ -174,62 +193,77 @@ class WorkflowController:
                     stop_event=stop_event,
                     log_callback=lambda message: log_callback(worker_id, message),
                     extracted_dir=output_paths.extracted_dir,
-                        analysis_progress_callback=lambda percent, stage: progress_callback(
-                            index - 1,
-                            total,
-                            f"正在处理 {relative_name}",
-                            percent,
-                            stage,
-                            0 if config.enable_translation else None,
-                            "翻译已关闭" if not config.enable_translation else "等待翻译",
-                            worker_id,
-                            str(relative_name),
-                        ),
+                    analysis_progress_callback=lambda percent, stage: progress_callback(
+                        index - 1,
+                        total,
+                        tr("正在处理 {name}").format(name=relative_name),
+                        percent,
+                        stage,
+                        0 if config.enable_translation else None,
+                        tr("翻译已关闭") if not config.enable_translation else tr("等待翻译"),
+                        worker_id,
+                        str(relative_name),
+                    ),
                 )
 
             metascape_elapsed = time.perf_counter() - metascape_start
             downloaded_path = artifacts.download_path
-            log_callback(worker_id, f"[{index}/{total}] Metascape 完成，用时 {self._format_seconds(metascape_elapsed)}。")
+            log_callback(
+                worker_id,
+                f"[{index}/{total}] " + tr("Metascape 完成，用时 {duration}。").format(duration=self._format_seconds(metascape_elapsed)),
+            )
 
             if stop_event.is_set():
-                raise ExcelProcessingError("用户已停止任务。")
+                raise ExcelProcessingError(tr("用户已停止任务。"))
 
             if config.enable_translation:
                 if artifacts.excel_path is not None:
                     try:
                         translation_start = time.perf_counter()
-                        log_callback(worker_id, f"[{index}/{total}] 翻译开始。")
+                        log_callback(worker_id, f"[{index}/{total}] " + tr("翻译开始。"))
                         translated_path = translate_workbook(
                             artifacts.excel_path,
                             translator,
                             stop_event=stop_event,
+                            target_header=translation_target_by_code(config.translation_target).column_header,
                             progress_callback=lambda current, total_rows: progress_callback(
                                 index - 1,
                                 total,
-                                f"翻译 {relative_name}: {current}/{total_rows}",
+                                tr("翻译 {name}: {current}/{total}").format(
+                                    name=relative_name, current=current, total=total_rows
+                                ),
                                 100,
-                                "Metascape 分析完成，正在翻译 Excel",
+                                tr("Metascape 分析完成，正在翻译 Excel"),
                                 0 if total_rows == 0 else int((current / total_rows) * 100),
-                                f"翻译进行中：{current}/{total_rows}",
+                                tr("翻译进行中：{current}/{total}").format(current=current, total=total_rows),
                                 worker_id,
                                 str(relative_name),
                             ),
                         )
                         # translate_workbook 内部已完成列宽等布局调整，这里不再重复打开保存一次。
                         translation_elapsed = time.perf_counter() - translation_start
-                        log_callback(worker_id, f"[{index}/{total}] 翻译完成：{translated_path}，用时 {self._format_seconds(translation_elapsed)}。")
+                        log_callback(
+                            worker_id,
+                            f"[{index}/{total}] "
+                            + tr("翻译完成：{path}，用时 {duration}。").format(
+                                path=translated_path, duration=self._format_seconds(translation_elapsed)
+                            ),
+                        )
                     except (ExcelProcessingError, TranslationError, ValueError) as exc:
                         translated_path = None
                         translation_elapsed = 0.0
-                        log_callback(worker_id, f"[{index}/{total}] 翻译失败，已跳过：{exc}")
+                        log_callback(
+                            worker_id,
+                            f"[{index}/{total}] " + tr("翻译失败，已跳过：{error}").format(error=exc),
+                        )
                         progress_callback(
                             index - 1,
                             total,
-                            f"翻译失败，已跳过 {gene_file.name}",
+                            tr("翻译失败，已跳过 {name}").format(name=gene_file.name),
                             100,
-                            "Metascape 已完成，翻译已跳过",
+                            tr("Metascape 已完成，翻译已跳过"),
                             0,
-                            f"翻译失败：{exc}",
+                            tr("翻译失败：{error}").format(error=exc),
                             worker_id,
                             str(relative_name),
                         )
@@ -238,20 +272,26 @@ class WorkflowController:
                     try:
                         finalize_workbook_layout(artifacts.excel_path, sheet_name="Enrichment", auto_fit_headers=["Description"])
                     except ExcelProcessingError as exc:
-                        log_callback(worker_id, f"[{index}/{total}] Excel 后处理跳过：{exc}")
-                log_callback(worker_id, f"[{index}/{total}] 翻译已关闭，跳过翻译阶段。")
+                        log_callback(
+                            worker_id,
+                            f"[{index}/{total}] " + tr("Excel 后处理跳过：{error}").format(error=exc),
+                        )
+                log_callback(worker_id, f"[{index}/{total}] " + tr("翻译已关闭，跳过翻译阶段。"))
                 translated_path = artifacts.excel_path
 
             elapsed = time.perf_counter() - start_time
-            log_callback(worker_id, f"[{index}/{total}] 当前文件处理完成，总用时 {self._format_seconds(elapsed)}。")
+            log_callback(
+                worker_id,
+                f"[{index}/{total}] " + tr("当前文件处理完成，总用时 {duration}。").format(duration=self._format_seconds(elapsed)),
+            )
             progress_callback(
                 index,
                 total,
-                f"已完成 {gene_file.name}",
+                tr("已完成 {name}").format(name=gene_file.name),
                 100,
-                "当前文件处理完成",
+                tr("当前文件处理完成"),
                 100 if config.enable_translation else None,
-                "翻译完成" if config.enable_translation else "翻译已关闭",
+                tr("翻译完成") if config.enable_translation else tr("翻译已关闭"),
                 worker_id,
                 str(relative_name),
             )
@@ -261,7 +301,7 @@ class WorkflowController:
                 status=TaskStatus.SUCCESS,
                 download_path=downloaded_path,
                 translated_path=translated_path,
-                message="处理成功",
+                message=tr("处理成功"),
                 elapsed_seconds=elapsed,
                 metascape_elapsed_seconds=metascape_elapsed,
                 translation_elapsed_seconds=translation_elapsed,
@@ -278,18 +318,21 @@ class WorkflowController:
             if isinstance(exc, ExcelProcessingError) and metascape_elapsed is not None:
                 log_callback(
                     worker_id,
-                    f"[{index}/{total}] 翻译阶段失败：{exc}。Metascape 已完成，用时 {self._format_seconds(metascape_elapsed)}。"
+                    f"[{index}/{total}] "
+                    + tr("翻译阶段失败：{error}。Metascape 已完成，用时 {duration}。").format(
+                        error=exc, duration=self._format_seconds(metascape_elapsed)
+                    ),
                 )
             else:
-                log_callback(worker_id, f"[{index}/{total}] 处理失败：{exc}")
+                log_callback(worker_id, f"[{index}/{total}] " + tr("处理失败：{error}").format(error=exc))
             progress_callback(
                 index,
                 total,
-                f"失败 {gene_file.name}",
+                tr("失败 {name}").format(name=gene_file.name),
                 100 if metascape_elapsed is not None else None,
                 str(exc),
                 None if not config.enable_translation else 0,
-                str(exc) if config.enable_translation else "翻译已关闭",
+                str(exc) if config.enable_translation else tr("翻译已关闭"),
                 worker_id,
                 str(relative_name),
             )
@@ -310,7 +353,7 @@ class WorkflowController:
     def _format_seconds(seconds: float | None) -> str:
         if seconds is None:
             return "-"
-        return f"{seconds:.1f} 秒"
+        return f"{seconds:.1f} {tr('秒')}"
 
     @staticmethod
     def _pause_between_files(config: AppConfig, stop_event: Event) -> None:
@@ -363,6 +406,7 @@ class WorkflowController:
             model=config.api_model,
             api_format=config.api_format,
             auth_field=config.auth_field,
+            target_language=translation_target_by_code(config.translation_target).prompt_name,
             request_interval_seconds=config.request_interval_seconds,
             max_retries=config.translation_max_retries,
             proxy_url=config.proxy_url_for(config.translation_connection_mode),
