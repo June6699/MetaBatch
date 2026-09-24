@@ -203,8 +203,10 @@ _EN: dict[str, str] = {
         "{label} click failed after {max_attempts} attempts. Last error: {error}"
     ),
     "打开 Metascape：{url}": "Opening Metascape: {url}",
+    "无法启动 Chromium，请先安装 Playwright 浏览器：{error}": "Could not start Chromium; install the Playwright browser first: {error}",
     "等待 networkidle 超时，继续执行页面流程。": "Timed out waiting for networkidle; continuing with the page flow.",
     "已定位基因输入框：{selector}": "Located gene input box: {selector}",
+    "基因输入框仍不可编辑，请检查 Metascape 页面是否加载完成。": "The gene input box is still not editable; check whether the Metascape page has finished loading.",
     "已定位提交按钮：{selector}": "Located submit button: {selector}",
     "已定位 Express Analysis 按钮：{selector}": "Located Express Analysis button: {selector}",
     "已定位 Analysis Report Page 按钮：{selector}": "Located Analysis Report Page button: {selector}",
@@ -241,6 +243,7 @@ _EN: dict[str, str] = {
     ),
     "翻译失败：{error}": "Translation failed: {error}",
     "无法解析翻译结果：{payload}": "Could not parse the translation result: {payload}",
+    "翻译接口返回的批量结果数量不匹配。": "The translation endpoint returned an unexpected number of batch results.",
     "获取模型失败：{error}": "Failed to fetch models: {error}",
     "{operation}未返回 JSON（HTTP {status}，Content-Type: {content_type}）。": (
         "{operation} did not return JSON (HTTP {status}, Content-Type: {content_type})."

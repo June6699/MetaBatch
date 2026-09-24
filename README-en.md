@@ -16,7 +16,7 @@ MetaBatch is a Python 3.11 desktop tool for batch enrichment analysis on [Metasc
 - **Download types**:
   - `Excel only (xlsx)`: downloads the single Excel result and translates it directly.
   - `Full Zip package`: downloads the Zip, extracts it, locates the Excel inside, then translates.
-- **AI translation**: calls an OpenAI-compatible chat API (also compatible with the native Anthropic Messages format and the OpenAI Responses format), with one-click model fetching and connection testing. The translation target language is selectable (Simplified Chinese by default; English is not offered because Metascape descriptions are already in English): Traditional Chinese, Japanese, Korean, French, German, Spanish, Portuguese, Russian, and Italian are available. Identical terms share a single in-flight request across concurrent workers, and `429/5xx` responses are retried with exponential backoff.
+- **AI translation**: calls an OpenAI-compatible chat API (also compatible with the native Anthropic Messages format and the OpenAI Responses format), with one-click model fetching and connection testing. The translation target language is selectable (Simplified Chinese by default; English is not offered because Metascape descriptions are already in English): Traditional Chinese, Japanese, Korean, French, German, Spanish, Portuguese, Russian, and Italian are available. Every 20 Description cells are sent as one batch request, written back in order, and cached across workers to avoid duplicate requests; `429/5xx` responses are retried with exponential backoff.
 - **Multiple profiles**: save and switch between multiple configuration profiles; the last-used profile is restored on startup. The UI language (中文 / English) and the translation target language are persisted per profile.
 - **Connections**: Metascape and the translation API can each use a direct connection or a proxy; concurrency is adjustable (default 5, max 32).
 - **Bilingual UI**: switch between 中文 and English with one click in the dedicated "语言 / Language" tab at the top, effective immediately; log and error messages follow the UI language.
@@ -124,6 +124,7 @@ For structured files such as `xlsx/xls/tsv/csv`, specify which column holds the 
 - Settings are stored in `metabatch_config.json` next to the program, saving multiple profiles as UTF-8 plain text. **It contains API Keys — do not share it.** Writes use atomic temp-file replacement, so an unexpected crash cannot corrupt the file.
 - Every run creates a timestamped log file in the `logs/` directory.
 - `metabatch_summary.csv` is written to the output root, summarizing each file's status, timing, and failure reasons.
+- Source and exe launches use separate configuration files: `py -3.11 main.py` reads the project-root file, while `dist/MetaBatch.exe` reads `dist/metabatch_config.json`. Input folders, proxies, and API settings are not synchronized automatically.
 
 ## Notes and Limitations
 
@@ -135,6 +136,7 @@ For structured files such as `xlsx/xls/tsv/csv`, specify which column holds the 
 - If the result file has no `Enrichment` worksheet, it is treated as a failure with the hint that the gene list may be too small to produce enrichment results.
 - Skip detection is based on the mapped `_metascape` target file in the output directory, so identical tasks are never submitted twice.
 - If a translation API call fails, the translation for that file is skipped, the next file is processed, and the reason is recorded in the summary.
+- The Responses format uses `instructions`, `input`, and `max_output_tokens` for GPT-5-style models and omits the incompatible `temperature` parameter.
 
 ## Packaging
 
@@ -146,6 +148,10 @@ py -3.11 -m PyInstaller --noconfirm MetaBatch.spec
 ```
 
 The result is `dist/MetaBatch.exe`. Path handling in the project is compatible with both `__file__` and `sys._MEIPASS` scenarios.
+
+The target computer still needs a usable Playwright Chromium installation (`py -3.11 -m playwright install chromium`). If the windowed exe appears to do nothing, inspect the `logs/` directory next to the exe; console errors are hidden in the windowed build.
+
+PySide6's Qt core DLLs depend on ICU. The packaging spec now bundles matching ICU DLLs and registers the Qt DLL search path; if `DLL load failed while importing QtCore` still appears, make sure you are using the newly rebuilt `dist/MetaBatch.exe` rather than an older copy.
 
 ## Development and Testing
 

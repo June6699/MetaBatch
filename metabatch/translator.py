@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import threading
 import time
 from typing import Any
@@ -39,6 +40,7 @@ class TranslationError(Exception):
 
 
 RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
+DEFAULT_BATCH_SIZE = 20
 
 
 class _InflightCall:
@@ -143,6 +145,10 @@ class Translator:
     def translate(self, text: str) -> str:
         raise NotImplementedError
 
+    def translate_batch(self, texts: list[str]) -> list[str]:
+        """Translate several strings while preserving order."""
+        return [self.translate(text) for text in texts]
+
 
 class OpenAICompatibleTranslator(Translator):
     def __init__(
@@ -157,6 +163,7 @@ class OpenAICompatibleTranslator(Translator):
         max_retries: int = 4,
         timeout_seconds: int = 60,
         proxy_url: str | None = None,
+        batch_size: int = DEFAULT_BATCH_SIZE,
     ) -> None:
         self._api_format = _coerce_api_format(api_format)
         self._auth_field = auth_field.strip() or "ANTHROPIC_AUTH_TOKEN"
@@ -170,9 +177,14 @@ class OpenAICompatibleTranslator(Translator):
         self._max_retries = max_retries
         self._timeout_seconds = timeout_seconds
         self._proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else None
+        self._batch_size = max(1, min(int(batch_size), 100))
         self._cache: dict[str, str] = {}
         self._inflight: dict[str, _InflightCall] = {}
         self._lock = threading.Lock()
+        # A workbook is translated in chunks.  Serialising the short cache
+        # check + request section prevents concurrent workers from sending
+        # the same chunk before the first worker has populated the cache.
+        self._batch_lock = threading.Lock()
         self._last_request_at = 0.0
 
     def translate(self, text: str) -> str:
@@ -213,6 +225,93 @@ class OpenAICompatibleTranslator(Translator):
         call.result = translated
         call.done.set()
         return translated
+
+    def translate_batch(self, texts: list[str]) -> list[str]:
+        """Translate a batch in one API request, using the shared cache."""
+        normalized = [str(text).strip() for text in texts]
+        result = ["" for _ in normalized]
+        with self._batch_lock:
+            pending: list[str] = []
+            seen: set[str] = set()
+            for source in normalized:
+                if not source or source in seen:
+                    continue
+                with self._lock:
+                    cached = self._cache.get(source)
+                if cached is None:
+                    pending.append(source)
+                seen.add(source)
+            for start in range(0, len(pending), self._batch_size):
+                chunk = pending[start : start + self._batch_size]
+                translated = self._translate_batch_with_retries(chunk)
+                if len(translated) != len(chunk):
+                    raise TranslationError(tr("翻译接口返回的批量结果数量不匹配。"))
+                with self._lock:
+                    self._cache.update(dict(zip(chunk, translated, strict=True)))
+        with self._lock:
+            for index, source in enumerate(normalized):
+                result[index] = self._cache.get(source, "") if source else ""
+        return result
+
+    def _translate_batch_with_retries(self, texts: list[str]) -> list[str]:
+        prompt = (
+            "Translate each item to the target language. Return ONLY a JSON object with key "
+            "translations whose value is an array of translated strings in exactly the same order and length.\n"
+            + json.dumps(texts, ensure_ascii=False)
+        )
+        last_error: Exception | None = None
+        for attempt in range(1, self._max_retries + 1):
+            response: requests.Response | None = None
+            try:
+                self._respect_rate_limit()
+                response = requests.post(self._url, headers=self._headers(), json=self._payload(prompt), proxies=self._proxies, timeout=self._timeout_seconds)
+            except requests.RequestException as exc:
+                last_error = exc
+            else:
+                if response.status_code in RETRYABLE_STATUS_CODES:
+                    last_error = TranslationError(tr("翻译接口暂时不可用，HTTP {status}: {body}").format(status=response.status_code, body=response.text[:300]))
+                elif response.status_code >= 400:
+                    raise TranslationError(tr("翻译请求被拒绝，HTTP {status}: {body}").format(status=response.status_code, body=response.text[:300]))
+                else:
+                    content = self._extract_message_content(_response_json(response, tr("翻译接口"))).strip()
+                    try:
+                        parsed = self._parse_batch_json(content)
+                        values = parsed.get("translations") if isinstance(parsed, dict) else None
+                        if values is None and isinstance(parsed, list):
+                            values = parsed
+                        if isinstance(values, list) and len(values) == len(texts):
+                            return [str(value).strip() for value in values]
+                        raise ValueError("invalid translation array")
+                    except (json.JSONDecodeError, ValueError, TypeError):
+                        last_error = TranslationError(tr("无法解析翻译结果：{payload}").format(payload=content[:300]))
+            if attempt < self._max_retries:
+                time.sleep(self._retry_delay(attempt, response))
+        raise TranslationError(tr("翻译失败：{error}").format(error=last_error)) from last_error
+
+    @staticmethod
+    def _parse_batch_json(content: str) -> Any:
+        """Parse JSON while tolerating markdown fences or a short preamble."""
+        value = content.strip()
+        if value.startswith("```"):
+            lines = value.splitlines()
+            if lines and lines[0].lstrip().startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].strip() == "```":
+                lines = lines[:-1]
+            value = "\n".join(lines).strip()
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            decoder = json.JSONDecoder()
+            for marker in ("{", "["):
+                start = value.find(marker)
+                if start >= 0:
+                    try:
+                        parsed, _ = decoder.raw_decode(value[start:])
+                        return parsed
+                    except json.JSONDecodeError:
+                        continue
+            raise
 
     def _translate_with_retries(self, text: str) -> str:
         last_error: Exception | None = None
@@ -279,12 +378,12 @@ class OpenAICompatibleTranslator(Translator):
     def _payload(self, text: str) -> dict[str, Any]:
         messages = [{"role": "user", "content": text}]
         if self._api_format is ApiFormat.ANTHROPIC_MESSAGES:
-            return {"model": self._model, "max_tokens": 1024, "system": self._system_prompt, "messages": messages}
+            return {"model": self._model, "max_tokens": 4096, "system": self._system_prompt, "messages": messages}
         if self._api_format is ApiFormat.OPENAI_RESPONSES:
             return {
                 "model": self._model,
-                "temperature": 0,
                 "instructions": self._system_prompt,
+                "max_output_tokens": 4096,
                 "input": [{"role": "user", "content": [{"type": "input_text", "text": text}]}],
             }
         return {

@@ -34,6 +34,9 @@ class FakeResponse:
 
 
 ANTHROPIC_OK_PAYLOAD = {"content": [{"type": "text", "text": "细胞周期"}]}
+BATCH_ANTHROPIC_OK_PAYLOAD = {
+    "content": [{"type": "text", "text": '{"translations":["细胞周期","免疫反应"]}'}]
+}
 
 
 class TranslatorEndpointTests(unittest.TestCase):
@@ -129,6 +132,29 @@ class TranslatorRetryTests(unittest.TestCase):
             self.assertEqual(translator.translate("cell cycle"), "细胞周期")
 
         self.assertEqual(mocked_post.call_count, 1)
+
+    @patch("metabatch.translator.requests.post")
+    def test_translate_batch_uses_one_request_and_preserves_duplicates(self, mocked_post: object) -> None:
+        mocked_post.return_value = FakeResponse(BATCH_ANTHROPIC_OK_PAYLOAD)
+        translator = self._translator(batch_size=20)
+
+        result = translator.translate_batch(["cell cycle", "immune response", "cell cycle"])
+
+        self.assertEqual(result, ["细胞周期", "免疫反应", "细胞周期"])
+        self.assertEqual(mocked_post.call_count, 1)
+
+    @patch("metabatch.translator.requests.post")
+    def test_translate_batch_splits_large_input_into_chunks(self, mocked_post: object) -> None:
+        mocked_post.side_effect = [
+            FakeResponse(BATCH_ANTHROPIC_OK_PAYLOAD),
+            FakeResponse({"content": [{"type": "text", "text": '{"translations":["第三项"]}'}]}),
+        ]
+        translator = self._translator(batch_size=2)
+
+        result = translator.translate_batch(["one", "two", "three"])
+
+        self.assertEqual(result, ["细胞周期", "免疫反应", "第三项"])
+        self.assertEqual(mocked_post.call_count, 2)
 
 
 class GeneReaderTests(unittest.TestCase):

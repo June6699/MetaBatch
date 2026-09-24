@@ -1,5 +1,13 @@
 # Update Log
 
+## 2026-09-24
+
+- `Fix`: 修复 Metascape 初始页面把禁用的 `Express Analysis` 按钮误当成可点击页签的问题，等待基因输入框真正可编辑后再填充，降低 exe 运行时的页面竞态与 `fill` 超时。
+- `Update`: Excel 翻译改为每 20 条 Description 一次批量请求，保持原顺序写回，并在并发 Worker 间共享缓存，减少请求数量与等待时间。
+- `Fix`: 完善 OpenAI Responses 请求体，针对 GPT-5 类模型使用 `max_output_tokens` 并移除不兼容的 `temperature`；兼容模型返回的 JSON 数组、对象和 Markdown 代码块。
+- `Update`: 重新构建 `dist/MetaBatch.exe`，并补充源码启动与 exe 启动使用不同配置目录的说明。
+- `Fix`: PySide6/Qt6 打包显式携带 ICU DLL，加入运行时 Qt DLL 搜索路径并关闭 UPX 压缩，修复部分 Windows 机器启动时 `QtCore` DLL 加载失败。
+
 ## 2026-09-06
 
 - `Add`: 新增英文界面模式（配置管理区右上角下拉框切换，中文 / English，立即生效），界面、日志、错误消息全部跟随界面语言。

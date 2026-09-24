@@ -16,7 +16,7 @@ MetaBatch 是一个面向 [Metascape](https://metascape.org) 批量富集分析�
 - **下载类型**：
   - `仅 Excel (xlsx)`：下载单个 Excel 结果并直接翻译。
   - `完整 Zip 包`：下载 Zip，自动解压并定位其中的 Excel，再翻译。
-- **AI 翻译**：按 OpenAI Chat 兼容协议调用（兼容 Anthropic Messages 原生格式与 OpenAI Responses 格式），支持一键获取模型列表、测试连通性；翻译目标语言可选（默认简体中文，不提供英语——Metascape 的 Description 本身是英文），支持繁体中文、日语、韩语、法语、德语、西班牙语、葡萄牙语、俄语、意大利语；相同词条在并发下共享同一次请求，`429/5xx` 自动指数退避重试。
+- **AI 翻译**：按 OpenAI Chat 兼容协议调用（兼容 Anthropic Messages 原生格式与 OpenAI Responses 格式），支持一键获取模型列表、测试连通性；翻译目标语言可选（默认简体中文，不提供英语——Metascape 的 Description 本身是英文），支持繁体中文、日语、韩语、法语、德语、西班牙语、葡萄牙语、俄语、意大利语；每 20 条 Description 合并为一次批量请求，按顺序写回 Excel，并通过缓存避免并发 Worker 重复请求，`429/5xx` 自动指数退避重试。
 - **多套配置**：可保存多套配置并随时切换，启动时自动恢复上次使用的配置；界面语言（中文 / English）与翻译目标语言随配置持久化。
 - **连接方式**：Metascape 与翻译 API 可分别选择直连或代理，并发数量可调（默认 5，最大 32）。
 - **双语界面**：顶部独立的「语言 / Language」标签页中一键切换中文 / English，立即生效；日志与错误消息跟随界面语言。
@@ -124,6 +124,7 @@ Prl2b1
 - 配置文件保存在程序目录下的 `metabatch_config.json`，以 UTF-8 明文保存多套配置，其中**包含 API Key，请勿外传**；写入采用临时文件原子替换，异常中断不会损坏配置。
 - 每次运行都会在 `logs/` 目录下生成一份带时间戳的日志文件。
 - `metabatch_summary.csv` 会写到输出根目录，汇总每个文件的状态、耗时与失败原因。
+- 源码启动和 exe 启动使用各自程序目录下的配置：`py -3.11 main.py` 读取项目根目录的 `metabatch_config.json`，`dist/MetaBatch.exe` 读取 `dist/metabatch_config.json`；两者的输入目录、代理和 API 设置不会自动同步。
 
 ## 说明与限制
 
@@ -135,6 +136,7 @@ Prl2b1
 - 如果结果文件中没有 `Enrichment` 工作表，程序会将其视为失败，并提示"可能因为基因过少未产生富集结果"。
 - 程序按输出目录中映射后的 `_metascape` 目标文件做跳过判断，不会重复提交同名任务。
 - 如果翻译 API 调用失败，程序会跳过该文件的翻译，继续处理下一个文件，并在 summary 中记录失败原因。
+- Responses 格式对 GPT-5 类模型使用 `instructions`、`input` 和 `max_output_tokens`，不会发送不兼容的 `temperature` 参数。
 
 ## 打包
 
@@ -146,6 +148,10 @@ py -3.11 -m PyInstaller --noconfirm MetaBatch.spec
 ```
 
 产物为 `dist/MetaBatch.exe`。项目内的路径处理已兼容 `__file__` / `sys._MEIPASS` 场景。
+
+exe 仍需要目标电脑上可用的 Playwright Chromium（首次安装：`py -3.11 -m playwright install chromium`）。如果 exe 双击后没有窗口，先查看 exe 同目录的 `logs/`；窗口版不会显示控制台错误，日志通常能直接指出配置、浏览器或页面加载问题。
+
+PySide6 的 Qt 核心 DLL 依赖 ICU。打包配置会把匹配的 ICU DLL 和 Qt DLL 搜索路径一起放入 exe；如果仍看到 `DLL load failed while importing QtCore`，请确认使用的是本次重新构建的 `dist/MetaBatch.exe`，不要混用旧 exe。
 
 ## 开发与测试
 

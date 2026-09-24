@@ -8,7 +8,7 @@ from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 
 from .i18n import tr
-from .translator import Translator
+from .translator import DEFAULT_BATCH_SIZE, Translator
 
 RowProgressCallback = Callable[[int, int], None]
 
@@ -45,16 +45,30 @@ def translate_workbook(
         sheet.cell(row=1, column=target_column, value=target_header)
 
         total_rows = max(sheet.max_row - 1, 0)
-        for offset, row_index in enumerate(range(2, sheet.max_row + 1), start=1):
+        row_indexes = list(range(2, sheet.max_row + 1))
+        descriptions = [sheet.cell(row=row_index, column=description_column).value for row_index in row_indexes]
+        batch_size = DEFAULT_BATCH_SIZE
+        translated_values: list[str] = []
+        for start in range(0, len(descriptions), batch_size):
             if stop_event and stop_event.is_set():
                 raise ExcelProcessingError(tr("用户已停止任务。"))
-
-            description = sheet.cell(row=row_index, column=description_column).value
-            translated = translator.translate("" if description is None else str(description))
-            sheet.cell(row=row_index, column=target_column, value=translated)
-
+            chunk = descriptions[start:start + batch_size]
+            sources = ["" if value is None else str(value) for value in chunk]
+            # Keep compatibility with lightweight/custom translators that
+            # only implement the original single-item API.
+            translate_batch = getattr(translator, "translate_batch", None)
+            if callable(translate_batch):
+                batch_result = list(translate_batch(sources))
+                if len(batch_result) != len(sources):
+                    raise ExcelProcessingError(tr("翻译接口返回的批量结果数量不匹配。"))
+                translated_values.extend(batch_result)
+            else:
+                translated_values.extend(translator.translate(source) for source in sources)
             if progress_callback:
-                progress_callback(offset, total_rows)
+                progress_callback(min(start + len(chunk), total_rows), total_rows)
+
+        for row_index, translated in zip(row_indexes, translated_values, strict=True):
+            sheet.cell(row=row_index, column=target_column, value=translated)
 
         _finalize_workbook_layout(workbook, sheet_name="Enrichment", auto_fit_headers=["Description", target_header])
         workbook.save(workbook_path)

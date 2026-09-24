@@ -8,7 +8,16 @@ from pathlib import Path
 from threading import Event
 from typing import Callable, Iterable
 
-from playwright.sync_api import Browser, Locator, Page, Playwright, TimeoutError as PlaywrightTimeoutError, expect, sync_playwright
+from playwright.sync_api import (
+    Browser,
+    Error as PlaywrightError,
+    Locator,
+    Page,
+    Playwright,
+    TimeoutError as PlaywrightTimeoutError,
+    expect,
+    sync_playwright,
+)
 
 from .i18n import tr
 from .models import DownloadType, DownloadedArtifacts
@@ -71,12 +80,18 @@ class MetascapeClient:
         self._browser: Browser | None = None
 
     def __enter__(self) -> "MetascapeClient":
-        self._playwright = sync_playwright().start()
-        launch_kwargs = {"headless": self._headless}
-        if self._proxy_url:
-            launch_kwargs["proxy"] = {"server": self._proxy_url}
-        self._browser = self._playwright.chromium.launch(**launch_kwargs)
-        return self
+        try:
+            self._playwright = sync_playwright().start()
+            launch_kwargs = {"headless": self._headless}
+            if self._proxy_url:
+                launch_kwargs["proxy"] = {"server": self._proxy_url}
+            self._browser = self._playwright.chromium.launch(**launch_kwargs)
+            return self
+        except (PlaywrightError, OSError) as exc:
+            self.close()
+            raise MetascapeAutomationError(
+                tr("无法启动 Chromium，请先安装 Playwright 浏览器：{error}").format(error=exc)
+            ) from exc
 
     def __exit__(self, exc_type, exc, tb) -> None:
         self.close()
@@ -122,6 +137,12 @@ class MetascapeClient:
                 stop_event=stop_event,
             )
             self._log(log_callback, tr("已定位基因输入框：{selector}").format(selector=textbox_selector))
+            self._wait_for_editable_textbox(
+                page,
+                textbox,
+                timeout_seconds=min(timeout_seconds, 60),
+                stop_event=stop_event,
+            )
             self._click_with_retry(
                 page,
                 textbox_selector,
@@ -130,7 +151,7 @@ class MetascapeClient:
                 log_callback,
                 timeout_ms=15_000,
             )
-            textbox.fill(gene_text)
+            textbox.fill(gene_text, timeout=30_000)
 
             submit_button, submit_selector = self._find_first_visible(
                 page,
@@ -324,6 +345,28 @@ class MetascapeClient:
             )
         )
 
+    def _wait_for_editable_textbox(
+        self,
+        page: Page,
+        textbox: Locator,
+        timeout_seconds: int,
+        stop_event: Event,
+    ) -> None:
+        """Wait until Angular has removed the initial read-only state."""
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            if stop_event.is_set():
+                raise MetascapeAutomationError(tr("用户已停止任务。"))
+            try:
+                readonly = textbox.get_attribute("readonly")
+                aria_disabled = textbox.get_attribute("aria-disabled")
+                if textbox.is_visible() and textbox.is_enabled() and readonly is None and aria_disabled != "true":
+                    return
+            except Exception:  # noqa: BLE001
+                pass
+            page.wait_for_timeout(250)
+        raise MetascapeAutomationError(tr("基因输入框仍不可编辑，请检查 Metascape 页面是否加载完成。"))
+
     def _maybe_click_first(
         self,
         page: Page,
@@ -335,7 +378,12 @@ class MetascapeClient:
         for selector in selectors:
             locator = page.locator(selector).first
             try:
-                if locator.count() > 0 and locator.is_visible():
+                # The initial page can expose a disabled ``Express Analysis``
+                # submit button that matches the tab text selector.  Do not
+                # force-click that control before the gene input is populated;
+                # doing so races the page state and can leave the textbox
+                # read-only (as seen in the run log).
+                if locator.count() > 0 and locator.is_visible() and locator.is_enabled():
                     self._click_with_retry(page, selector, label, stop_event, log_callback, timeout_ms=10_000, max_attempts=2)
                     return
             except Exception:  # noqa: BLE001
@@ -454,6 +502,15 @@ class MetascapeClient:
                         label=label, attempt=attempt, error=exc
                     ),
                 )
+                try:
+                    # A force/JS click on a genuinely disabled Angular control
+                    # can bypass the page state machine and leave the next
+                    # input read-only.  Wait for it to become enabled instead.
+                    if not locator.is_enabled():
+                        page.wait_for_timeout(1000 * attempt)
+                        continue
+                except Exception:  # noqa: BLE001
+                    pass
                 try:
                     locator.scroll_into_view_if_needed(timeout=timeout_ms)
                     locator.click(timeout=timeout_ms, force=True)
