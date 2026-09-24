@@ -28,28 +28,34 @@ MetaBatch is a Python 3.11 desktop tool for batch enrichment analysis on [Metasc
 
 ```text
 MetaBatch/
-├─ main.py
+├─ main.py                          # Entry point
+├─ build.bat                        # One-click build script (double-click)
+├─ MetaBatch.spec                   # PyInstaller build configuration
 ├─ requirements.txt
-├─ MetaBatch.spec            # PyInstaller build configuration
-├─ README.md
-├─ README-en.md
+├─ README.md / README-en.md
+├─ update.md                        # Update log
+├─ translate_boundary_metascape.py  # Offline backfill translation CLI
 ├─ assets/
 │  └─ metabatch_icon.ico
+├─ runtime_hooks/
+│  ├─ crash_handler.py              # Global crash handler (runtime hook)
+│  └─ qt_dll_path.py                # Qt DLL search path (runtime hook)
 ├─ metabatch/
 │  ├─ __init__.py
-│  ├─ assets.py              # app icon generation
-│  ├─ excel_processor.py     # Enrichment sheet translation and column widths
-│  ├─ gene_reader.py         # gene list discovery and reading
-│  ├─ gui.py                 # PySide6 main window
-│  ├─ i18n.py                # bilingual UI text dictionary
-│  ├─ logging_utils.py       # run logs
-│  ├─ metascape_client.py    # Playwright automation
-│  ├─ models.py              # data models and translation language definitions
-│  ├─ paths.py               # output path rules
-│  ├─ runtime.py             # frozen/source path compatibility
-│  ├─ settings.py            # settings persistence
-│  ├─ translator.py          # OpenAI-compatible translation client
-│  └─ workflow.py            # concurrent task scheduling
+│  ├─ assets.py                      # app icon generation
+│  ├─ excel_processor.py             # Enrichment sheet translation and column widths
+│  ├─ gene_reader.py                 # gene list discovery and reading
+│  ├─ gui.py                          # PySide6 main window
+│  ├─ i18n.py                         # bilingual UI text dictionary
+│  ├─ logging_utils.py                # run logs
+│  ├─ metascape_client.py             # Playwright automation
+│  ├─ models.py                        # data models and translation language definitions
+│  ├─ paths.py                         # output path rules
+│  ├─ runtime.py                       # frozen/source path compatibility
+│  ├─ settings.py                      # settings persistence
+│  ├─ translator.py                    # OpenAI-compatible translation client
+│  └─ workflow.py                      # concurrent task scheduling
+├─ demo/                              # sample inputs and results (not distributed)
 └─ tests/
 ```
 
@@ -124,7 +130,18 @@ For structured files such as `xlsx/xls/tsv/csv`, specify which column holds the 
 - Settings are stored in `metabatch_config.json` next to the program, saving multiple profiles as UTF-8 plain text. **It contains API Keys — do not share it.** Writes use atomic temp-file replacement, so an unexpected crash cannot corrupt the file.
 - Every run creates a timestamped log file in the `logs/` directory.
 - `metabatch_summary.csv` is written to the output root, summarizing each file's status, timing, and failure reasons.
-- Source and exe launches use separate configuration files: `py -3.11 main.py` reads the project-root file, while `dist/MetaBatch.exe` reads `dist/metabatch_config.json`. Input folders, proxies, and API settings are not synchronized automatically.
+- Source and exe launches use separate configuration files: `py -3.11 main.py` reads the project-root file, while the packaged `dist/MetaBatch/MetaBatch.exe` reads `dist/MetaBatch/metabatch_config.json` next to it. Input folders, proxies, and API settings are not synchronized automatically.
+
+## Offline Backfill Translation
+
+`translate_boundary_metascape.py` batch-translates an **existing result folder** without re-running Metascape:
+
+```powershell
+$env:METABATCH_TRANSLATION_API_KEY = "your-key"
+py -3.11 translate_boundary_metascape.py --results-dir "results-dir" --model "model-name"
+```
+
+It recursively processes every `*_metascape.xlsx`, skips already-translated files or those without an `Enrichment` sheet, deduplicates and batch-translates the unique descriptions, and writes `metabatch_translation_summary.tsv` to the result folder.
 
 ## Notes and Limitations
 
@@ -140,18 +157,49 @@ For structured files such as `xlsx/xls/tsv/csv`, specify which column holds the 
 
 ## Packaging
 
-After installing PyInstaller, build with the bundled spec (icon and resources included):
+The easiest way is to **double-click `build.bat`** in the project root; or run manually:
 
 ```powershell
 py -3.11 -m pip install pyinstaller
-py -3.11 -m PyInstaller --noconfirm MetaBatch.spec
+py -3.11 -m PyInstaller --clean --noconfirm MetaBatch.spec
 ```
 
-The result is `dist/MetaBatch.exe`. Path handling in the project is compatible with both `__file__` and `sys._MEIPASS` scenarios.
+### Output layout (onedir)
 
-The target computer still needs a usable Playwright Chromium installation (`py -3.11 -m playwright install chromium`). If the windowed exe appears to do nothing, inspect the `logs/` directory next to the exe; console errors are hidden in the windowed build.
+The result is a directory (fast startup, easy to troubleshoot):
 
-PySide6's Qt core DLLs depend on ICU. The packaging spec now bundles matching ICU DLLs and registers the Qt DLL search path; if `DLL load failed while importing QtCore` still appears, make sure you are using the newly rebuilt `dist/MetaBatch.exe` rather than an older copy.
+```text
+dist/MetaBatch/
+├─ MetaBatch.exe          # Main program (double-click)
+└─ _internal/             # All runtime dependencies (PySide6, playwright, Python runtime, ...)
+```
+
+### Size breakdown and trimming
+
+`_internal` is about 186 MB:
+
+| Part | ~Size | Notes |
+|---|---|---|
+| playwright | 102 MB | Includes `node.exe` (~87 MB), the runtime playwright uses to drive the browser — **required** |
+| PySide6 | 55 MB | Qt Core/Gui/Widgets, required for the GUI |
+| PIL & others | ~30 MB | Icon generation, certificates, charset, greenlet, ... |
+
+`MetaBatch.spec` already excludes unused Qt modules (WebEngine, Qml/Quick, Multimedia, 3D, Pdf, ...) and optional dependencies pulled in via third-party `try/except` imports (numpy/OpenBLAS, lxml, h2, cryptography, `opengl32sw`, AVIF, OpenSSL 3), reducing the size from ~280 MB to ~186 MB. If rendering misbehaves in an extreme GPU-less environment, remove the corresponding exclusion from the spec and rebuild.
+
+### Crash handling and logs
+
+- The packaged build installs a global crash hook: uncaught exceptions are written to `logs/metabatch_crash_*.log` next to the exe with a friendly dialog, instead of the raw PyInstaller error box.
+- If double-clicking the exe shows no window, inspect `dist/MetaBatch/logs/`; the windowed build hides the console, and the logs usually pinpoint configuration, browser, or page issues.
+
+### Distributing to other computers
+
+The Playwright **Chromium browser binaries** are not inside the pip package / dist (they live in the packager's `ms-playwright` cache). After copying the whole `dist/MetaBatch/` folder to a clean machine, install the browser once:
+
+```powershell
+py -3.11 -m playwright install chromium
+```
+
+(The Python packages and the node driver are already in `_internal`; there is no need to install the playwright package separately.) Modern PySide6 has ICU built in, so no separate ICU files are needed. If `DLL load failed while importing QtCore` still appears, make sure you are running the newly rebuilt `dist/MetaBatch/MetaBatch.exe`, not an older copy.
 
 ## Development and Testing
 

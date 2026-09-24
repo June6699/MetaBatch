@@ -28,28 +28,34 @@ MetaBatch 是一个面向 [Metascape](https://metascape.org) 批量富集分析�
 
 ```text
 MetaBatch/
-├─ main.py
+├─ main.py                          # 入口
+├─ build.bat                        # 一键打包脚本（双击运行）
+├─ MetaBatch.spec                   # PyInstaller 打包配置
 ├─ requirements.txt
-├─ MetaBatch.spec            # PyInstaller 打包配置
-├─ README.md
-├─ README-en.md
+├─ README.md / README-en.md
+├─ update.md                        # 更新日志
+├─ translate_boundary_metascape.py  # 离线补翻译命令行工具（见下文）
 ├─ assets/
 │  └─ metabatch_icon.ico
+├─ runtime_hooks/
+│  ├─ crash_handler.py              # 全局崩溃兜底（运行时钩子）
+│  └─ qt_dll_path.py                # Qt DLL 搜索路径（运行时钩子）
 ├─ metabatch/
 │  ├─ __init__.py
-│  ├─ assets.py              # 应用图标生成
-│  ├─ excel_processor.py     # Enrichment 表翻译与列宽调整
-│  ├─ gene_reader.py         # 基因列表文件发现与读取
-│  ├─ gui.py                 # PySide6 主界面
-│  ├─ i18n.py                # 界面文案双语词典
-│  ├─ logging_utils.py       # 运行日志
-│  ├─ metascape_client.py    # Playwright 自动化
-│  ├─ models.py              # 数据模型与翻译语言定义
-│  ├─ paths.py               # 输出路径规则
-│  ├─ runtime.py             # 打包/源码运行路径兼容
-│  ├─ settings.py            # 配置持久化
-│  ├─ translator.py          # OpenAI 兼容翻译客户端
-│  └─ workflow.py            # 并发任务调度
+│  ├─ assets.py                      # 应用图标生成
+│  ├─ excel_processor.py             # Enrichment 表翻译与列宽调整
+│  ├─ gene_reader.py                 # 基因列表文件发现与读取
+│  ├─ gui.py                          # PySide6 主界面
+│  ├─ i18n.py                         # 界面文案双语词典
+│  ├─ logging_utils.py                # 运行日志
+│  ├─ metascape_client.py             # Playwright 自动化
+│  ├─ models.py                        # 数据模型与翻译语言定义
+│  ├─ paths.py                         # 输出路径规则
+│  ├─ runtime.py                       # 打包/源码运行路径兼容
+│  ├─ settings.py                      # 配置持久化
+│  ├─ translator.py                    # OpenAI 兼容翻译客户端
+│  └─ workflow.py                      # 并发任务调度
+├─ demo/                              # 示例输入与结果（不随包分发）
 └─ tests/
 ```
 
@@ -124,7 +130,18 @@ Prl2b1
 - 配置文件保存在程序目录下的 `metabatch_config.json`，以 UTF-8 明文保存多套配置，其中**包含 API Key，请勿外传**；写入采用临时文件原子替换，异常中断不会损坏配置。
 - 每次运行都会在 `logs/` 目录下生成一份带时间戳的日志文件。
 - `metabatch_summary.csv` 会写到输出根目录，汇总每个文件的状态、耗时与失败原因。
-- 源码启动和 exe 启动使用各自程序目录下的配置：`py -3.11 main.py` 读取项目根目录的 `metabatch_config.json`，`dist/MetaBatch.exe` 读取 `dist/metabatch_config.json`；两者的输入目录、代理和 API 设置不会自动同步。
+- 源码启动和 exe 启动使用各自程序目录下的配置：`py -3.11 main.py` 读取项目根目录的 `metabatch_config.json`，打包后的 `dist/MetaBatch/MetaBatch.exe` 读取同目录 `dist/MetaBatch/metabatch_config.json`；两者的输入目录、代理和 API 设置不会自动同步。
+
+## 离线补翻译工具
+
+`translate_boundary_metascape.py` 用于对**已有的结果目录**批量补翻译，无需重新跑 Metascape：
+
+```powershell
+$env:METABATCH_TRANSLATION_API_KEY = "你的Key"
+py -3.11 translate_boundary_metascape.py --results-dir "结果目录" --model "模型名"
+```
+
+它会递归处理目录下所有 `*_metascape.xlsx`，自动跳过已翻译或无 `Enrichment` 的文件，对唯一 Description 去重后批量翻译，并在结果目录生成 `metabatch_translation_summary.tsv` 汇总每个文件的状态。
 
 ## 说明与限制
 
@@ -140,18 +157,49 @@ Prl2b1
 
 ## 打包
 
-安装 PyInstaller 后，使用项目自带的 spec（已包含图标与资源）：
+最简单的方式是**双击项目根目录的 `build.bat`**；或手动执行：
 
 ```powershell
 py -3.11 -m pip install pyinstaller
-py -3.11 -m PyInstaller --noconfirm MetaBatch.spec
+py -3.11 -m PyInstaller --clean --noconfirm MetaBatch.spec
 ```
 
-产物为 `dist/MetaBatch.exe`。项目内的路径处理已兼容 `__file__` / `sys._MEIPASS` 场景。
+### 产物布局（onedir）
 
-exe 仍需要目标电脑上可用的 Playwright Chromium（首次安装：`py -3.11 -m playwright install chromium`）。如果 exe 双击后没有窗口，先查看 exe 同目录的 `logs/`；窗口版不会显示控制台错误，日志通常能直接指出配置、浏览器或页面加载问题。
+打包结果为目录形态（启动快、便于排查）：
 
-PySide6 的 Qt 核心 DLL 依赖 ICU。打包配置会把匹配的 ICU DLL 和 Qt DLL 搜索路径一起放入 exe；如果仍看到 `DLL load failed while importing QtCore`，请确认使用的是本次重新构建的 `dist/MetaBatch.exe`，不要混用旧 exe。
+```text
+dist/MetaBatch/
+├─ MetaBatch.exe          # 主程序（双击运行）
+└─ _internal/             # 全部运行依赖（PySide6、playwright、Python 运行时等）
+```
+
+### 体积构成与裁剪
+
+`_internal` 约 186 MB，主要构成：
+
+| 部分 | 约占用 | 说明 |
+|---|---|---|
+| playwright | 102 MB | 其中 `node.exe` 约 87 MB，是 playwright 驱动浏览器的运行时，**必需** |
+| PySide6 | 55 MB | Qt 的 Core/Gui/Widgets 等，GUI 必需 |
+| PIL 及其他 | ~30 MB | 图标生成、证书、字符集、greenlet 等 |
+
+`MetaBatch.spec` 已裁剪项目未使用的 Qt 模块（WebEngine、Qml/Quick、Multimedia、3D、Pdf 等），以及环境中被第三方库 `try/except` 误收集的可选依赖（numpy/OpenBLAS、lxml、h2、cryptography、`opengl32sw`、AVIF、OpenSSL 3），体积由约 280 MB 降至约 186 MB。若在极端无 GPU 环境界面渲染异常，可在 spec 中移除对应排除项后重新打包。
+
+### 崩溃兜底与日志
+
+- 打包版内置全局崩溃钩子：未捕获异常会写入 exe 同目录 `logs/metabatch_crash_*.log` 并弹窗提示，不再出现 PyInstaller 原始错误框。
+- 若双击 exe 后没有窗口，先查看 `dist/MetaBatch/logs/`；窗口版不显示控制台，日志通常能直接定位配置、浏览器或页面问题。
+
+### 分发到其他电脑
+
+Playwright 的 **Chromium 浏览器本体**不在 pip 包 / dist 内（位于打包机用户目录 `ms-playwright` 缓存）。把整个 `dist/MetaBatch/` 拷到未安装过的电脑后，需让对方先安装一次浏览器：
+
+```powershell
+py -3.11 -m playwright install chromium
+```
+
+（Python 包与 node 驱动已在 `_internal` 中，无需另装 playwright 包。）现代 PySide6 已内置 ICU，无需单独携带；若仍看到 `DLL load failed while importing QtCore`，请确认使用的是本次重新构建的 `dist/MetaBatch/MetaBatch.exe`，不要混用旧 exe。
 
 ## 开发与测试
 

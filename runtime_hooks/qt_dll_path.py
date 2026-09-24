@@ -11,7 +11,11 @@ _dll_directory_handles = []
 
 if getattr(sys, "frozen", False):
     _root = Path(getattr(sys, "_MEIPASS", Path(sys.executable).resolve().parent))
-    for _directory in (_root / "PySide6", _root):
+    # PyInstaller keeps shiboken6 in its own package directory while the
+    # PySide6 extension modules live below ``PySide6``.  QtCore.pyd imports
+    # shiboken6.abi3.dll, so both directories must be registered before the
+    # first PySide6 import.
+    for _directory in (_root / "PySide6", _root / "shiboken6", _root):
         if not _directory.is_dir():
             continue
         try:

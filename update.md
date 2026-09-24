@@ -5,8 +5,12 @@
 - `Fix`: 修复 Metascape 初始页面把禁用的 `Express Analysis` 按钮误当成可点击页签的问题，等待基因输入框真正可编辑后再填充，降低 exe 运行时的页面竞态与 `fill` 超时。
 - `Update`: Excel 翻译改为每 20 条 Description 一次批量请求，保持原顺序写回，并在并发 Worker 间共享缓存，减少请求数量与等待时间。
 - `Fix`: 完善 OpenAI Responses 请求体，针对 GPT-5 类模型使用 `max_output_tokens` 并移除不兼容的 `temperature`；兼容模型返回的 JSON 数组、对象和 Markdown 代码块。
-- `Update`: 重新构建 `dist/MetaBatch.exe`，并补充源码启动与 exe 启动使用不同配置目录的说明。
-- `Fix`: PySide6/Qt6 打包显式携带 ICU DLL，加入运行时 Qt DLL 搜索路径并关闭 UPX 压缩，修复部分 Windows 机器启动时 `QtCore` DLL 加载失败。
+- `Add`: 新增全局崩溃兜底运行时钩子 `runtime_hooks/crash_handler.py`：任何未捕获异常（含启动期 Qt DLL 加载失败）都会写入 `logs/metabatch_crash_*.log` 并弹出友好提示（Qt 不可用时退化为 Win32 原生弹窗），替代 PyInstaller 原始的 "Unhandled exception in script" 对话框。
+- `Update`: 完善并规范化打包配置为 `MetaBatch.spec`：输出名 `MetaBatch`、嵌入图标、打包 `assets`、启用「崩溃兜底 + Qt DLL 搜索路径」两个运行时钩子、`optimize=2`、关闭 UPX（UPX 会压坏 Qt DLL，导致 `QtCore` 加载失败）。
+- `Update`: 打包产物改为 onedir 布局 `dist/MetaBatch/MetaBatch.exe`（依赖位于同级 `_internal/`）；源码运行与 exe 运行分别读取各自程序目录下的 `metabatch_config.json`，互不自动同步。
+- `Update`: 裁剪未使用的 Qt 模块，以及环境中被第三方库 `try/except` 误收集、项目实际不依赖的可选包（numpy/OpenBLAS、lxml、h2/hpack/hyperframe、cryptography、bcrypt、PyYAML、`opengl32sw.dll`、PIL 的 AVIF 插件、多余的 OpenSSL 3）。已实测 requests 的 https 走标准库 ssl（OpenSSL 1.1）、openpyxl 走标准库 xml、urllib3 默认 HTTP/1.1，dist 体积由约 280 MB 降至约 186 MB。
+- `Fix`: `requirements.txt` 补 `Pillow`（`assets.py` 使用 PIL 但此前漏列），全新环境 `pip install -r requirements.txt` 不再因缺 PIL 报错。
+- `Add`: 新增 `build.bat`，双击即按 `MetaBatch.spec` 一键清理并重新打包。
 
 ## 2026-09-06
 
