@@ -1,5 +1,60 @@
 # Update Log
 
+## 2026-10-15（第六步：报告页不再依赖弹窗 + 代理预检 + 默认全屏）
+
+- `Fix`: **报告页那 5 分钟卡死修掉**。Metascape 的「Analysis Report Page」按钮处理器是 `openReportFinalUrl()`（内部 `window.open`），在无头/自动化下会被浏览器弹窗策略拦住，点了也打不开——23:21 那次运行 5 个 worker 全部卡在这一步直到被手动停止，**0 个文件落盘**。现在改为：先点一次（兼容旧行为），15 秒内拿不到报告页就**按 session_id 直接跳转 `#/reportfinal/<session_id>`**。实测直接跳转 **2.1 秒**进报告页并成功下载 xlsx（`get_file?session_id=...&file_name=metascape_result.xlsx`）。
+- `Fix`: DOM 点击不再重复派发事件（原先是 `el.click()` + `mousedown/mouseup/click`，等于点了两次，会让 `window.open` 被弹窗策略判定为"非用户手势"而拦截）。现在只做一次 `el.click()`。
+- `Add`: **代理可用性预检**。配置里选了代理但代理软件没启动时（本次就是：`proxy_port=51888`，而 `xray` 进程 23:41 才启动），浏览器行为会变得莫名其妙。现在开跑前先用 TCP 探测代理端口，不通则打日志说明并**本次自动改走直连**，不让整次运行白等。
+- `Add`: 界面**默认最大化**（`showMaximized`，不再沿用上次窗口尺寸）；边框内仍保留最小尺寸限制。
+- `Update`: 单元测试 77 项全部通过；报告页等待逻辑拆成 `_wait_for_report_page` / `_read_session_id`，便于复用与排错。
+
+## 2026-10-15（第五步：修掉自己引入的 `selector` 未定义 bug + 加静态守卫）
+
+- `Fix`: 第四步给基因输入框加 JS 聚焦时写错了变量名（用了不存在的 `selector`，正确是 `textbox_selector`），异常被兜底 `except` 吞掉后**静默回退到慢速鼠标点击**，于是 23:16 那次运行又出现点击挂死。现已修正；5 并发真机复测：`JS 聚焦成功 5/5`、`Submit 按钮 DOM 点击成功`、单文件 17~25 秒全部通过。
+- `Add`: 新增静态守卫测试 `tests/test_workflow_gates.UndefinedNameGuardTests`：按函数作用域扫描 `metabatch/*.py`，报告"使用了未定义名字"（含 `page.evaluate(...)` 的参数），并带自检用例——必须能抓到当初那个 `selector is not defined`。这类"低级但会静默降级"的错误以后在测试阶段就会失败。
+- `Update`: 单元测试总数 75 → 77。
+
+## 2026-10-15（第四步：点击改为 DOM 优先 + 维护页误报处理 + 清单口径修正）
+
+- `Fix`: **点击策略改为 DOM 点击优先**（实测有效）。22:43 那次运行里 `locator.click()` 与 `force=True` 会整段挂死 30 秒（同一时刻连 `Locator.element_handle()` 都超时），而 DOM 点击（`el.click()` + 派发 mousedown/mouseup）在同一页面 1~8 秒内完成。现在 `_click_with_retry` 先做 DOM 点击，失败才退回鼠标点击，且鼠标单次上限 30s→8s、尝试次数 3→2：单次点击最坏等待从 270 秒降到约 30 秒。5 并发真实链路复测：**5/5 全部成功，单文件 19~34 秒**。
+- `Fix`: 修正 DOM 点击的实现缺陷——`page.evaluate()` 不接受 `timeout` 参数，之前传了会导致每次 DOM 点击都静默异常并回退鼠标点击（即"看起来没生效"）。改为不传超时，并在日志区分"DOM 点击成功 / 未生效（原因）"。
+- `Update`: 基因输入框不再做鼠标点击，改为 JS 聚焦（写入本来就是 JS 赋值），省掉一次可能挂死的鼠标交互。
+- `Fix`: **维护页误报处理**。Metascape 的 `app.js` 会在 `health_check_pull`（一个同步 XHR）返回 `1` **或请求失败**时跳转 `maintenance.html`；实测该接口一直返回 `0`（连续 10 次 / 5 并发），因此维护页多为健康检查偶发失败造成的假警报，而旧逻辑遇到它只会慢轮询等 15 分钟。现在：先以 2 秒间隔重载最多 8 次尝试恢复，未恢复再退回慢轮询，且每步都记录「当前页面 URL/标题」，日志能直接看出到底是被跳到维护页还是元素真的不存在。
+- `Fix`: 结果清单口径修正——被停止的任务（`stopped`）不再算作「已做 Metascape」（当时没有结果文件），改标「部分完成」；运行末尾统计改为「已完成 X 个…中途停止 Z 个…失败 F 个」。
+- `Add`: 系统饱和保护：按逻辑核数给出并发上限（每个 Chromium 约需 2 个逻辑核），并在每个文件开始前检查系统 CPU，超过 70% 先等待回落（最多 2 分钟），避免浏览器渲染进程被"饿"住导致点击拿不到 ack。
+- `Add`: 点击最终失败时记录现场（URL、标题、输入框长度、按钮中心命中测试、最多 12 个可点元素状态）并保存截图到 `logs/click_failure_*.png`。
+- `Update`: 浏览器启动参数增加 `--disable-background-timer-throttling`、`--disable-backgrounding-occluded-windows`、`--disable-renderer-backgrounding`。
+
+## 2026-10-15（第三步：阈值可自定义、结果清单、维护页识别）
+
+- `Update`: 「大列表保护」的基因数上限改为**可自定义**：界面勾选框右侧新增数值输入（默认 5000，留空沿用上次数值，非正整数会报错提示），随配置持久化（`max_genes_per_file`）。
+- `Add`: 新增**结果清单** `metabatch_gene_report.csv`（写到用户指定的输出目录根下，UTF-8 BOM，Excel 直接打开不乱码）：覆盖本次扫描到的**全部输入文件**，列出文件名/相对路径/**基因数**/**是否做了 Metascape**（已做·未做·已有结果·部分完成）/**是否翻译了**（已翻译·已暂停·翻译失败·未翻译·未知）/状态/跳过原因/消息。同时 `metabatch_summary.csv` 新增 `gene_count` 列，运行日志末尾给出清单统计（共 N 个、已做 X、其中已翻译 Y、已有结果 Z、基因过多跳过 K、失败 F）。
+- `Fix`: 识别 Metascape **维护页**（`maintenance.html`）：不再让选择器傻等，而是明确提示「Metascape 当前返回的是维护页…」后等待恢复。（第四步已进一步确认：该页多为 `health_check_pull` 偶发失败造成的假警报，并改为快速重载恢复。）
+- `Fix`: 翻译接口预检的"预检通过"日志会带上 Base URL 与模型名，便于确认到底用的是哪套配置。
+- `Update`: 翻译失败的文件（例如基因太少、Metascape 未生成 Enrichment 表）现在明确记为 `partial` 并在清单里显示"翻译失败"，不再混进"成功"。
+
+## 2026-10-15（第二步：结果拿不到的三处根因修复）
+
+- `Fix`: 修复大基因列表导致 `textarea.fill()` 卡满 30 秒的问题（10/14 三次运行的 6755–8407 基因列表全部因此失败）。实测 8000 基因时 Playwright 的 `fill()` 超时，但 textarea 其实**已经写入 75174 字符**——卡住的是动作性检查。现改为直接 `el.value = text` + 派发 `input/change`（实测 0.5 秒完成；已确认对 Angular `ng-show="inputData.textbox"` 生效、Submit 按钮正常出现），仅在赋值失败时回退 `fill()`，并在日志中记录基因数与字符数。相关方法：`metascape_client._set_textbox_value`。
+- `Add`: 新增「跳过超过 5000 基因的列表」开关（默认打开）：超过上限的列表不再提交 Metascape，而是记入日志与汇总（`status=skipped`、`skipped_reason=基因过多`、界面汇总单列「因基因过多 N 个」）。当前数据集最大文件为 15147 基因（Metascape 官方上限以内也不适合本工具直接提交）。
+- `Add`: 新增**自动续跑**：每次开始前预扫描输出目录，`*_metascape.xlsx` 存在且已完成（含 `Enrichment` 表；启用翻译时还要求已有目标语言列）的文件直接跳过，只处理未完成与未处理文件；只写了一半的损坏结果会被重跑。中断后再次「开始处理」即从断点继续。界面与日志会打印「预扫描完成：待处理 N 个，已有结果跳过 M 个，因基因过多跳过 K 个」。
+- `Add`: 新增**翻译预检**（每次运行只做一次最小翻译请求）：失败则本次运行暂停翻译并明确提示，Metascape 结果照常下载——避免 10/15 那次 9 个文件各白等 60 秒超时（当时日志为 `api.bblabu.ai ... Read timed out`）。翻译中途失败的文件不再混进"成功"，而是记为 `partial`（Metascape 已完成、翻译失败）。
+- `Update`: `metabatch_summary.csv` 新增 `skipped_reason`、`translation_status`、`translation_message` 三列；界面汇总新增「其中 N 个 Metascape 结果已下载但翻译失败」「跳过明细：已有结果 X，因基因过多 Y」「失败原因：…」。
+- `Update`: 连续失败 20 个文件后停止提交剩余任务（多为一整批网络/接口问题），已完成的文件保留在磁盘上，修好后再次开始自动续跑。
+- `Update`: 离线补翻译工具 `translate_boundary_metascape.py` 默认改为 DeepSeek（`https://api.deepseek.com/v1` + `deepseek-flash`）；运行中翻译被暂停/失败的文件可用它一次性补齐「中文描述」列。
+- `Add`: 新增 `tests/test_workflow_gates.py`（阈值边界、已有结果完成度判定、预扫描分类、翻译预检），并扩展 i18n 词典校验。
+- `Update`: 单文件超时（Metascape 分析 + 下载）默认由 600 秒放宽到 1800 秒：5000 基因以内容易被 75% 的 PPI 步拖过 10 分钟，超时会被误判为失败。
+- `Fix`: 跳过的原因键（`已有结果` / `基因过多`）固定使用中文原始值写入 summary，不再跟随界面语言翻译，修复英文界面下"跳过明细"统计恒为 0 的问题。
+
+## 2026-10-15
+
+- `Fix`: 修复 Submit 按钮无法点击的问题：粘贴后等待 `Submit` 按钮可见且可点击（轮询 500ms，必要时补派 `input` 事件恢复 Angular 状态），不再误落到始终可见但禁用的 Step 3 `Express Analysis` 按钮；移除加载阶段对所谓 "Express Analysis 页签" 的 force click（当前版本并无此页签，且会扰乱页面状态）。
+- `Fix`: Submit 之后等待 `Express Analysis` 按钮真正变为 enabled 再点击；`Analysis Report Page` 点击后兼容当前版本的同标签页 `#/reportfinal/...` 跳转与旧版本的新标签页，只点击一次，不再重复点击。
+- `Update`: 首页 `networkidle` 由固定 30s 改为 5s 尽力等待，就绪信号改为元素轮询，单文件耗时减少约 25s；Zip 下载入口选择器更新为 `All in One Zip` 文案优先。
+- `Add`: 新增「文件匹配」输入框，支持通配符（如 `*.txt`、`*gene*`），多个模式用 `;` 分隔，留空则匹配所有支持类型；输入目录下 txt 与 Metascape 结果 xlsx 并存时，设置 `*.txt` 即可只处理 txt。界面实时显示「匹配文件 N 个」；配置与输出路径同目录，不新增开关。
+- `Update`: 翻译批量请求改为按内容长度自适应分块：待翻译条目总字符 ≤4000（且 ≤100 条）时一次发送，超限才按字符预算贪心打包成最少的几块，不拆分单条；Excel 处理改为一次性调用批量翻译，去掉此前 Excel 外层 20 条与翻译器内层 20 条的嵌套重复分块。
+- `Add`: 新增文件匹配测试（`tests/test_gene_files.py`）与自适应分块测试（`_plan_chunks`、超字符拆分、去重/顺序/进度回调）。
+
 ## 2026-09-24
 
 - `Fix`: 修复 Metascape 初始页面把禁用的 `Express Analysis` 按钮误当成可点击页签的问题，等待基因输入框真正可编辑后再填充，降低 exe 运行时的页面竞态与 `fill` 超时。

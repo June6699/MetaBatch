@@ -27,8 +27,8 @@ SYSTEM_PROMPT = (
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--results-dir", type=Path, required=True)
-    parser.add_argument("--api-base-url", default="https://aibz.cc/v1")
-    parser.add_argument("--model", default="deepseek-v4-flash")
+    parser.add_argument("--api-base-url", default="https://api.deepseek.com/v1")
+    parser.add_argument("--model", default="deepseek-flash")
     parser.add_argument("--batch-size", type=int, default=20)
     parser.add_argument("--summary-name", default="metabatch_translation_summary.tsv")
     parser.add_argument("--progress-log-name", default="metabatch_translation_run.log")

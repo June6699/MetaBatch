@@ -56,9 +56,14 @@ class ApiFormat(str, Enum):
 
 class TaskStatus(str, Enum):
     SUCCESS = "success"
+    PARTIAL = "partial"  # Metascape 结果已下载，但翻译阶段失败
     SKIPPED = "skipped"
     FAILED = "failed"
     STOPPED = "stopped"
+
+
+# 基因数上限默认值：超过该数量的列表会让 Metascape 输入框响应变得极慢
+DEFAULT_MAX_GENES_PER_FILE = 5000
 
 
 @dataclass(frozen=True)
@@ -108,7 +113,10 @@ class AppConfig:
     output_dir: Path
     analysis_mode: AnalysisMode = AnalysisMode.EXPRESS
     download_type: DownloadType = DownloadType.XLSX_ONLY
+    file_pattern: str = ""  # 可选通配符，如 *.txt；留空匹配全部支持类型
     enable_translation: bool = True
+    skip_large_gene_files: bool = True  # 关闭后不再按基因数上限跳过
+    max_genes_per_file: int = DEFAULT_MAX_GENES_PER_FILE  # 超过该基因数的列表直接跳过（Metascape 大列表会让页面卡死）
     api_base_url: str = ""
     api_key: str = ""
     api_model: str = ""
@@ -122,7 +130,7 @@ class AppConfig:
     proxy_host: str = "127.0.0.1"
     proxy_port: int | None = None
     concurrency: int = 5
-    timeout_seconds: int = 600
+    timeout_seconds: int = 1800
     min_delay_seconds: int = 5
     max_delay_seconds: int = 10
     request_interval_seconds: float = 0.1
@@ -131,6 +139,13 @@ class AppConfig:
     def normalized_input_column(self) -> str | None:
         value = self.input_column.strip()
         return value or None
+
+    def normalized_max_genes_per_file(self) -> int | None:
+        """返回生效的基因数上限；未启用或非正数时返回 None（表示不限制）。"""
+        if not self.skip_large_gene_files:
+            return None
+        limit = int(self.max_genes_per_file)
+        return limit if limit > 0 else None
 
     def proxy_url_for(self, mode: ConnectionMode) -> str | None:
         if mode is ConnectionMode.DIRECT:
@@ -158,3 +173,8 @@ class TaskResult:
     elapsed_seconds: float
     metascape_elapsed_seconds: float | None = None
     translation_elapsed_seconds: float | None = None
+    # 结果可追踪性：跳过原因与翻译阶段状态（写入 metabatch_summary.csv）
+    skipped_reason: str = ""
+    translation_status: str = ""
+    translation_message: str = ""
+    gene_count: int = -1  # -1 表示未统计（文件被跳过且未读取）

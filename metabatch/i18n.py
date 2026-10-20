@@ -40,6 +40,13 @@ _EN: dict[str, str] = {
     "请输入存在的基因列表文件夹路径。": "Please enter a gene list folder path that exists.",
     "请输入输出结果文件夹路径。": "Please enter an output folder path.",
     "输入目录中未找到 txt/csv/tsv/xlsx/xls 文件。": "No txt/csv/tsv/xlsx/xls files found in the input directory.",
+    "输入目录中未找到匹配的 txt/csv/tsv/xlsx/xls 文件。": "No matching txt/csv/tsv/xlsx/xls files found in the input directory.",
+    "文件匹配": "File pattern",
+    "可留空（匹配所有支持的类型）；支持 *.txt、*gene* 等，多个用 ; 分隔。": (
+        "Leave empty to match all supported types; supports *.txt, *gene*, etc.; separate multiple patterns with ;."
+    ),
+    "匹配文件：{count} 个": "Matched files: {count}",
+    "匹配文件：0 个": "Matched files: 0",
     "Metascape 使用代理时请输入有效端口。": "Enter a valid port when Metascape uses a proxy.",
     "翻译 API 使用代理时请输入有效端口。": "Enter a valid port when the translation API uses a proxy.",
     "代理端口必须是 1-65535 之间的整数。": "Proxy port must be an integer between 1 and 65535.",
@@ -180,6 +187,7 @@ _EN: dict[str, str] = {
     "最近状态：{status}": "Last status: {status}",
     # ---- metascape_client ----
     "等待 Analysis Report Page 按钮超时。": "Timed out waiting for the Analysis Report Page button.",
+    "等待 Analysis Report Page 超时。": "Timed out waiting for the Analysis Report Page.",
     "浏览器尚未启动。": "Browser has not been started.",
     "Express Analysis 页签": "Express Analysis tab",
     "基因输入框": "gene input box",
@@ -224,6 +232,65 @@ _EN: dict[str, str] = {
     "{label} 第 {attempt} 次使用 force click 成功。": "{label} force click succeeded on attempt {attempt}.",
     "{label} force click 失败，第 {attempt} 次：{error}": "{label} force click failed on attempt {attempt}: {error}",
     "{label} 第 {attempt} 次使用 JS click 成功。": "{label} JS click succeeded on attempt {attempt}.",
+    "{label} DOM 点击成功。": "{label} DOM click succeeded.",
+    "{label} 第 {attempt} 次使用 DOM 点击成功。": "{label} DOM click succeeded on attempt {attempt}.",
+    "{label} DOM 点击未生效（{reason}），改用鼠标点击。": "{label} DOM click had no effect ({reason}); falling back to a mouse click.",
+    "点击失败现场：URL={url}，标题={title}，输入框长度={length}。": (
+        "Click failure context: URL={url}, title={title}, textarea length={length}."
+    ),
+    "点击失败现场：URL={url}，标题={title}，输入框长度={length}，按钮中心命中={hit}。": (
+        "Click failure context: URL={url}, title={title}, textarea length={length}, element at button centre={hit}."
+    ),
+    "可点元素：{text}（disabled={disabled}, aria={aria}, visible={visible}）": (
+        "Clickable element: {text} (disabled={disabled}, aria={aria}, visible={visible})"
+    ),
+    "记录点击失败现场时出错：{error}": "Failed to record the click failure context: {error}",
+    "已保存失败截图：{path}": "Failure screenshot saved: {path}",
+    "系统 CPU 占用 {percent}% 偏高，先等待负载回落再继续（避免浏览器被饿住导致点击超时）。": (
+        "System CPU usage is {percent}%; waiting for the load to drop before continuing "
+        "(avoids starving the browser and stalling clicks)."
+    ),
+    "系统负载已回落，继续处理。": "System load dropped; continuing.",
+    "当前页面：{url}（标题：{title}）": "Current page: {url} (title: {title})",
+    "当前页面：{url}": "Current page: {url}",
+    "Metascape 维护中，已等待超过 {minutes} 分钟仍未恢复，请稍后再试。": (
+        "Metascape is still on its maintenance page after more than {minutes} minutes; please try again later."
+    ),
+    "Metascape 已从维护页恢复，继续处理。": "Metascape recovered from the maintenance page; continuing.",
+    "Metascape 已从维护页恢复（第 {attempt} 次重载），继续处理。": (
+        "Metascape recovered from the maintenance page after {attempt} reload(s); continuing."
+    ),
+    "仍停在维护页（第 {attempt}/{total} 次重载）。": "Still on the maintenance page (reload {attempt}/{total}).",
+    "基因输入框已就绪（跳过鼠标点击）。": "Gene input box is ready (mouse click skipped).",
+    "基因输入框聚焦失败，改用鼠标点击：{error}": "Focusing the gene input box failed; falling back to a mouse click: {error}",
+    "点击未能打开报告页（弹窗被拦截），改用 session_id 直接跳转：{url}": (
+        "The click did not open the report page (popup blocked); navigating by session_id instead: {url}"
+    ),
+    "等待 Analysis Report Page 超时，且未能取得 session_id。": (
+        "Timed out waiting for the Analysis Report Page, and no session_id could be read."
+    ),
+    "代理 {url} 无法连接（端口没有监听），本次 Metascape 改走直连；请检查代理软件是否已启动。": (
+        "Proxy {url} is unreachable (nothing listening on that port); Metascape will use a direct connection for this "
+        "run. Check that the proxy application is running."
+    ),
+    "未在报告页读到 session_id，改用页面可见元素下载。": (
+        "No session_id could be read from the report page; falling back to the visible-element download."
+    ),
+    "直接取结果文件失败：{error}": "Fetching the result file directly failed: {error}",
+    "已直接按 session_id 取到结果文件：{name}（{size} 字节）": (
+        "Fetched the result file directly by session_id: {name} ({size} bytes)"
+    ),
+    "直接取结果文件超时，改用页面可见元素下载。": (
+        "Timed out fetching the result file directly; falling back to the visible-element download."
+    ),
+    "并发数已按 CPU 核数下调：{requested} → {applied}（{cores} 逻辑核，每个浏览器约需 2 个）。": (
+        "Concurrency reduced to match the CPU: {requested} → {applied} ({cores} logical cores; "
+        "each browser needs about two)."
+    ),
+    "实际并发会按 CPU 核数限制：{cores} 逻辑核 → 最多 {limit} 个（每个浏览器约需 2 个逻辑核）。": (
+        "Concurrency is capped by the CPU: {cores} logical cores → at most {limit} "
+        "(each browser needs about two logical cores)."
+    ),
     "{label} JS click 失败，第 {attempt} 次：{error}": "{label} JS click failed on attempt {attempt}: {error}",
     # ---- settings ----
     "配置文件为空，已恢复默认配置。": "The settings file is empty; defaults restored.",
@@ -268,6 +335,9 @@ _EN: dict[str, str] = {
     "Metascape 开始。": "Metascape started.",
     "翻译完成": "Translation finished",
     "处理成功": "Processed successfully",
+    "本次运行未处理该文件": "This file was not processed in this run",
+    "最后一次请求：{detail}": "Last request: {detail}",
+    "Metascape 页面操作失败（网络或浏览器异常）：{error}": "Metascape page operation failed (network or browser error): {error}",
     "日志文件：{path}": "Log file: {path}",
     "并发数：{count}": "Concurrency: {count}",
     "待处理文件数：{count}": "Files to process: {count}",
@@ -296,6 +366,86 @@ _EN: dict[str, str] = {
     "Excel 后处理跳过：{error}": "Excel post-processing skipped: {error}",
     "翻译 {name}: {current}/{total}": "Translating {name}: {current}/{total}",
     "翻译进行中：{current}/{total}": "Translating: {current}/{total}",
+    # ---- 大列表保护 / 续跑 / 翻译预检 ----
+    "跳过超过 {limit} 基因的列表": "Skip lists with more than {limit} genes",
+    "Metascape 输入框对大列表响应很慢（数千基因即可能超时），勾选后这类列表直接跳过并记入汇总。": (
+        "The Metascape input box responds very slowly to large lists (thousands of genes can time out); "
+        "when checked, such lists are skipped and reported in the summary."
+    ),
+    "大列表保护": "Large list guard",
+    "基因数 {count} 超过上限 {limit}，已跳过该列表。": "Gene count {count} exceeds the limit of {limit}; this list was skipped.",
+    "基因过多": "too many genes",
+    "预扫描完成：待处理 {pending} 个，已有结果跳过 {existing} 个，因基因过多跳过 {oversized} 个。": (
+        "Pre-scan finished: {pending} to process, {existing} skipped with existing results, {oversized} skipped for too many genes."
+    ),
+    "跳过已有结果：{name}（{reason}）": "Skipped existing result: {name} ({reason})",
+    "跳过基因过多的列表：{name}（{reason}）": "Skipped list with too many genes: {name} ({reason})",
+    "跳过 {name}": "Skipped {name}",
+    "已有结果": "existing result",
+    "已存在结果文件：{path}": "Result file already exists: {path}",
+    "预扫描读取失败，已跳过：{name}（{error}）": "Pre-scan could not read the file; skipped: {name} ({error})",
+    "翻译接口预检通过：{url} / {model}。": "Translation API pre-check passed: {url} / {model}.",
+    "翻译接口预检通过：{url}（模型 {model}）。": "Translation API pre-check passed: {url} (model {model}).",
+    "翻译接口预检失败：{error}。本次运行暂停翻译，先继续下载 Metascape 结果；修好接口后可用 translate_boundary_metascape.py 补翻译。": (
+        "Translation API pre-check failed: {error}. Translation is paused for this run; Metascape results keep downloading. "
+        "After fixing the endpoint, use translate_boundary_metascape.py to backfill translations."
+    ),
+    "本次运行未翻译 Excel（翻译接口不可用或被关闭），可用 translate_boundary_metascape.py 之后补翻译。": (
+        "Excel files were not translated in this run (the translation API was unavailable or disabled); "
+        "use translate_boundary_metascape.py to backfill translations later."
+    ),
+    "翻译接口不可用或被关闭，本次未翻译": "Translation API unavailable or disabled; not translated in this run",
+    "结果中没有可翻译的 Excel 文件": "No translatable Excel file in the result",
+    "翻译暂停": "translation paused",
+    "翻译失败": "translation failed",
+    "翻译已关闭": "translation disabled",
+    "已连续失败 {count} 个文件，停止提交剩余 {remaining} 个（多为网络或接口配置问题）；修好后再次开始会自动从未完成的文件继续。": (
+        "Stopped submitting the remaining {remaining} files after {count} consecutive failures "
+        "(usually a network or API configuration problem). Start again after fixing it and the unfinished files resume automatically."
+    ),
+    "其中 {count} 个 Metascape 结果已下载但翻译失败。": " Of them, {count} downloaded a Metascape result but failed to translate.",
+    "跳过明细：已有结果 {existing}，因基因过多 {oversized}。": (
+        " Skipped detail: {existing} existing results, {oversized} for too many genes."
+    ),
+    "失败原因：{reason}": " Failure reason: {reason}",
+    "翻译进度：本次已暂停（接口不可用）": "Translation: paused for this run (API unavailable)",
+    "写入基因列表：{count} 个基因（{chars} 字符）。": "Writing gene list: {count} genes ({chars} characters).",
+    "直接赋值未完全写入（{written}/{expected} 字符），回退 fill()。": (
+        "Direct assignment wrote {written}/{expected} characters; falling back to fill()."
+    ),
+    "直接赋值失败，回退 fill()：{error}": "Direct assignment failed; falling back to fill(): {error}",
+    "fill() 超时但基因列表已写入，继续执行。": "fill() timed out but the gene list was written; continuing.",
+    "基因列表写入失败：{error}": "Failed to write the gene list: {error}",
+    "结果文件已损坏，无法读取：{error}": "The result file is corrupted and cannot be read: {error}",
+    # ---- 基因数阈值输入 / 结果清单 / 维护页 ----
+    "跳过超过以下基因数的列表": "Skip lists with more than this many genes",
+    "超过该基因数的列表会被跳过；留空则保留上次的数值。": (
+        "Lists with more genes than this are skipped; leave empty to keep the previous value."
+    ),
+    "个基因": "genes",
+    "基因数上限必须是正整数。": "The gene limit must be a positive integer.",
+    "基因数上限必须大于 0。": "The gene limit must be greater than 0.",
+    "结果清单已写出：{path}": "Result report written: {path}",
+    "清单统计：共 {total} 个文件，已做 Metascape {done} 个，其中已翻译 {translated} 个；已有结果 {existing} 个；因基因过多跳过 {oversized} 个；失败 {failed} 个。": (
+        "Report totals: {total} files; Metascape run on {done} (of which {translated} translated); "
+        "{existing} with existing results; {oversized} skipped for too many genes; {failed} failed."
+    ),
+    "清单统计：共 {total} 个文件，已完成 {done} 个，其中已翻译 {translated} 个；已有结果 {existing} 个；因基因过多跳过 {oversized} 个；中途停止 {stopped} 个；失败 {failed} 个。": (
+        "Report totals: {total} files; {done} finished (of which {translated} translated); "
+        "{existing} with existing results; {oversized} skipped for too many genes; {stopped} stopped midway; {failed} failed."
+    ),
+    "已做": "done",
+    "未做": "not done",
+    "部分完成": "partly done",
+    "已翻译": "translated",
+    "未翻译": "not translated",
+    "已暂停": "paused",
+    "翻译失败": "translation failed",
+    "{count} 个已翻译": "{count} translated",
+    "Metascape 当前返回的是维护页（maintenance.html），页面结构完全不同，正在等待其恢复；若长时间不恢复请稍后再试。": (
+        "Metascape is currently serving its maintenance page (maintenance.html); the page structure is completely "
+        "different, waiting for it to recover. If it does not recover soon, try again later."
+    ),
 }
 
 

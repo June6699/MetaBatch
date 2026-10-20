@@ -24,8 +24,11 @@ class SavedProfile:
     input_dir: str = ""
     output_dir: str = ""
     download_type: str = DownloadType.XLSX_ONLY.value
+    file_pattern: str = ""  # 可选通配符
     input_column: str = ""
     enable_translation: bool = True
+    skip_large_gene_files: bool = True
+    max_genes_per_file: int = 5000
     api_base_url: str = ""
     api_key: str = ""
     api_model: str = ""
@@ -46,8 +49,11 @@ class SavedProfile:
             input_dir=str(config.input_dir),
             output_dir=str(config.output_dir),
             download_type=config.download_type.value,
+            file_pattern=config.file_pattern,
             input_column=config.input_column,
             enable_translation=config.enable_translation,
+            skip_large_gene_files=config.skip_large_gene_files,
+            max_genes_per_file=config.max_genes_per_file,
             api_base_url=config.api_base_url,
             api_key=config.api_key,
             api_model=config.api_model,
@@ -101,8 +107,11 @@ class SettingsStore:
                     download_type=DownloadType.from_value(
                         str(payload.get("download_type", DownloadType.XLSX_ONLY.value))
                     ).value,
+                    file_pattern=str(payload.get("file_pattern", "")),
                     input_column=str(payload.get("input_column", "")),
                     enable_translation=bool(payload.get("enable_translation", True)),
+                    skip_large_gene_files=bool(payload.get("skip_large_gene_files", True)),
+                    max_genes_per_file=_parse_max_genes_per_file(payload.get("max_genes_per_file", 5000)),
                     api_base_url=str(payload.get("api_base_url", "")),
                     api_key=str(payload.get("api_key", "")),
                     api_model=str(payload.get("api_model", "")),
@@ -175,3 +184,12 @@ def _parse_concurrency(value: object) -> int:
     except (TypeError, ValueError):
         return 5
     return max(1, min(concurrency, 32))
+
+
+def _parse_max_genes_per_file(value: object) -> int:
+    """基因数上限：非法或非正数时退回默认 5000（0/空值不再表示"不限制"）。"""
+    try:
+        limit = int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 5000
+    return limit if limit > 0 else 5000

@@ -6,7 +6,7 @@ from html import escape
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QObject, QThread, Signal
+from PySide6.QtCore import QObject, QThread, Qt, Signal
 from PySide6.QtGui import QFont, QIcon
 from PySide6.QtWidgets import (
     QApplication,
@@ -34,10 +34,11 @@ from PySide6.QtWidgets import (
 )
 
 from .assets import ensure_app_icon
-from .gene_reader import discover_gene_files
+from .gene_reader import MESSAGE_TOO_MANY_GENES_REASON, SKIPPED_REASON_EXISTING, discover_gene_files
 from .i18n import UI_LANGUAGES, get_ui_language, set_ui_language, tr
 from .logging_utils import get_logs_dir
 from .models import (
+    DEFAULT_MAX_GENES_PER_FILE,
     TRANSLATION_TARGETS,
     AnalysisMode,
     ApiFormat,
@@ -50,7 +51,10 @@ from .models import (
 )
 from .settings import DEFAULT_PROFILE_NAME, SavedProfile, SettingsStore
 from .translator import TranslationError, fetch_available_models, test_translation_connection
-from .workflow import WorkflowController
+from .workflow import WorkflowController, recommended_concurrency
+
+# 界面展示用的默认上限（数值本身来自 AppConfig，避免两处硬编码漂移）
+MAX_GENES_PER_FILE = DEFAULT_MAX_GENES_PER_FILE
 
 
 class WheelGuardComboBox(QComboBox):
@@ -101,14 +105,42 @@ def _parse_concurrency(text: str) -> int:
         raise ValueError(tr("并发数量必须是 1-32 之间的整数。")) from None
     if not 1 <= number <= 32:
         raise ValueError(tr("并发数量必须在 1-32 之间。"))
-    return number
+    # 每个 Chromium 约需 2 个逻辑核：并发过高会让系统饱和、点击拿不到 ack（Playwright: system saturation）
+    recommended = recommended_concurrency()
+    return min(number, recommended)
+
+
+def _logical_cores_for_tooltip() -> int:
+    try:
+        import os
+
+        return max(1, os.cpu_count() or 1)
+    except Exception:  # noqa: BLE001
+        return 1
+
+
+def _parse_gene_limit(text: str, fallback: int = DEFAULT_MAX_GENES_PER_FILE) -> int:
+    """解析"大列表保护"的基因数上限：空值时沿用 fallback，非法值直接报错。"""
+    value = text.strip()
+    if not value:
+        return fallback
+    try:
+        limit = int(value)
+    except ValueError:
+        raise ValueError(tr("基因数上限必须是正整数。")) from None
+    if limit < 1:
+        raise ValueError(tr("基因数上限必须大于 0。"))
+    return limit
 
 
 def _build_config(values: dict[str, Any]) -> AppConfig:
     input_dir = Path(str(values["input_dir"]).strip())
     output_dir = Path(str(values["output_dir"]).strip())
+    file_pattern = str(values.get("file_pattern", "")).strip()
     input_column = str(values.get("input_column", "")).strip()
     enable_translation = bool(values.get("enable_translation", True))
+    skip_large_gene_files = bool(values.get("skip_large_gene_files", True))
+    max_genes_per_file = _parse_gene_limit(str(values.get("max_genes_per_file", "")), fallback=DEFAULT_MAX_GENES_PER_FILE)
     api_base_url = str(values.get("api_base_url", "")).strip()
     api_key = str(values.get("api_key", "")).strip()
     api_model = str(values.get("api_model", "")).strip()
@@ -123,8 +155,8 @@ def _build_config(values: dict[str, Any]) -> AppConfig:
         raise ValueError(tr("请输入存在的基因列表文件夹路径。"))
     if not str(output_dir).strip():
         raise ValueError(tr("请输入输出结果文件夹路径。"))
-    if not discover_gene_files(input_dir):
-        raise ValueError(tr("输入目录中未找到 txt/csv/tsv/xlsx/xls 文件。"))
+    if not discover_gene_files(input_dir, file_pattern):
+        raise ValueError(tr("输入目录中未找到匹配的 txt/csv/tsv/xlsx/xls 文件。"))
     if enable_translation:
         if not api_base_url:
             raise ValueError(tr("启用翻译时请输入翻译 API Base URL。"))
@@ -142,7 +174,10 @@ def _build_config(values: dict[str, Any]) -> AppConfig:
         output_dir=output_dir,
         analysis_mode=AnalysisMode.EXPRESS,
         download_type=DownloadType.from_value(str(values["download_type"])),
+        file_pattern=file_pattern,
         enable_translation=enable_translation,
+        skip_large_gene_files=skip_large_gene_files,
+        max_genes_per_file=max_genes_per_file,
         api_base_url=api_base_url,
         api_key=api_key,
         api_model=api_model,
@@ -161,12 +196,34 @@ def _build_config(values: dict[str, Any]) -> AppConfig:
 
 def _build_summary(results: list[TaskResult]) -> str:
     success = sum(1 for item in results if item.status is TaskStatus.SUCCESS)
+    partial = sum(1 for item in results if item.status is TaskStatus.PARTIAL)
     skipped = sum(1 for item in results if item.status is TaskStatus.SKIPPED)
     failed = sum(1 for item in results if item.status is TaskStatus.FAILED)
     stopped = sum(1 for item in results if item.status is TaskStatus.STOPPED)
-    return tr("任务汇总：成功 {success}，跳过 {skipped}，失败 {failed}，停止 {stopped}。").format(
+    summary = tr("任务汇总：成功 {success}，跳过 {skipped}，失败 {failed}，停止 {stopped}。").format(
         success=success, skipped=skipped, failed=failed, stopped=stopped
     )
+    if partial:
+        summary += tr("其中 {count} 个 Metascape 结果已下载但翻译失败。").format(count=partial)
+
+    # 跳过原因拆分：已有结果 / 基因过多（让"没结果"的文件一眼可查）
+    # 注意：skipped_reason 一直存中文原始值，比较时必须用中文常量，否则英文界面会统计成 0
+    existing = sum(1 for item in results if item.status is TaskStatus.SKIPPED and item.skipped_reason == SKIPPED_REASON_EXISTING)
+    oversized = sum(
+        1
+        for item in results
+        if item.status is TaskStatus.SKIPPED and item.skipped_reason == MESSAGE_TOO_MANY_GENES_REASON
+    )
+    if skipped:
+        summary += tr("跳过明细：已有结果 {existing}，因基因过多 {oversized}。").format(
+            existing=existing, oversized=oversized
+        )
+    if failed:
+        # 失败明细里带上真实原因，避免用户只看到"失败 N 个"
+        reasons = [item.message for item in results if item.status is TaskStatus.FAILED and item.message]
+        if reasons:
+            summary += tr("失败原因：{reason}").format(reason=reasons[0][:200])
+    return summary
 
 
 class WorkflowWorker(QObject):
@@ -322,6 +379,8 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(1180, 860)
         self.resize(1280, 920)
         self.setWindowIcon(QIcon(str(ensure_app_icon())))
+        # 启动即最大化（run_app 里还会再调一次 showMaximized，覆盖"记住上次尺寸"的行为）
+        self.setWindowState(self.windowState() | Qt.WindowMaximized)
 
         self._settings_store = SettingsStore()
         self._settings, self._settings_warning = self._settings_store.load()
@@ -412,10 +471,26 @@ class MainWindow(QMainWindow):
         language_for_labels = get_ui_language()
 
         self.input_dir_edit = QLineEdit()
+
+        # 文件匹配输入框 + 实时匹配数标签
+        self.file_pattern_edit = QLineEdit()
+        self.file_pattern_edit.setPlaceholderText("*.txt")
+        self.matched_files_label = QLabel(tr("匹配文件：0 个"))
+        self.matched_files_label.setStyleSheet("color: #666666;")
+
         self.output_dir_edit = QLineEdit()
         self.input_column_edit = QLineEdit()
         self.enable_translation_checkbox = QCheckBox(tr("启用翻译"))
         self.enable_translation_checkbox.setChecked(True)
+        self.skip_large_gene_files_checkbox = QCheckBox(tr("跳过超过以下基因数的列表"))
+        self.skip_large_gene_files_checkbox.setChecked(True)
+        self.skip_large_gene_files_checkbox.setToolTip(
+            tr("Metascape 输入框对大列表响应很慢（数千基因即可能超时），勾选后这类列表直接跳过并记入汇总。")
+        )
+        self.max_genes_edit = QLineEdit(str(DEFAULT_MAX_GENES_PER_FILE))
+        self.max_genes_edit.setPlaceholderText("5000")
+        self.max_genes_edit.setFixedWidth(90)
+        self.max_genes_edit.setToolTip(tr("超过该基因数的列表会被跳过；留空则保留上次的数值。"))
         self.api_base_url_edit = QLineEdit()
         self.api_base_url_edit.setPlaceholderText("https://aibz.cc")
         self.api_format_combo = WheelGuardComboBox()
@@ -466,15 +541,39 @@ class MainWindow(QMainWindow):
         self.proxy_port_edit.setPlaceholderText(tr("例如 51888"))
         self.concurrency_edit = QLineEdit("5")
         self.concurrency_edit.setPlaceholderText("1-32")
+        self.concurrency_edit.setToolTip(
+            tr("实际并发会按 CPU 核数限制：{cores} 逻辑核 → 最多 {limit} 个（每个浏览器约需 2 个逻辑核）。").format(
+                cores=_logical_cores_for_tooltip(), limit=recommended_concurrency()
+            )
+        )
 
+        # 浏览按钮与输入框编辑信号（编辑结束后刷新匹配数）
         browse_input_button = QPushButton(tr("浏览"))
         browse_input_button.clicked.connect(self._browse_input)
         browse_output_button = QPushButton(tr("浏览"))
         browse_output_button.clicked.connect(self._browse_output)
+        self.input_dir_edit.editingFinished.connect(self._refresh_matched_count)
+        self.file_pattern_edit.editingFinished.connect(self._refresh_matched_count)
 
+        # 输入目录行
         row = 0
         self._add_row(form_layout, row, tr("基因列表文件夹"), self.input_dir_edit, browse_input_button)
         row += 1
+
+        # 文件匹配行 + 灰色提示 + 匹配数标签
+        self._add_row(form_layout, row, tr("文件匹配"), self.file_pattern_edit)
+        row += 1
+        pattern_hint = QLabel(
+            tr("可留空（匹配所有支持的类型）；支持 *.txt、*gene* 等，多个用 ; 分隔。")
+        )
+        pattern_hint.setStyleSheet("color: #666666;")
+        pattern_hint.setWordWrap(True)
+        form_layout.addWidget(pattern_hint, row, 1, 1, 2)
+        row += 1
+        form_layout.addWidget(self.matched_files_label, row, 1, 1, 2)
+        row += 1
+
+        # 输出目录行
         self._add_row(form_layout, row, tr("输出结果文件夹"), self.output_dir_edit, browse_output_button)
         row += 1
         self._add_row(form_layout, row, tr("分析模式"), self.analysis_mode_combo)
@@ -494,6 +593,16 @@ class MainWindow(QMainWindow):
         form_layout.addWidget(helper, row, 1, 1, 2)
         row += 1
         self._add_row(form_layout, row, tr("是否翻译"), self.enable_translation_checkbox)
+        row += 1
+        large_list_widget = QWidget()
+        large_list_layout = QHBoxLayout(large_list_widget)
+        large_list_layout.setContentsMargins(0, 0, 0, 0)
+        large_list_layout.setSpacing(8)
+        large_list_layout.addWidget(self.skip_large_gene_files_checkbox)
+        large_list_layout.addWidget(self.max_genes_edit)
+        large_list_layout.addWidget(QLabel(tr("个基因")))
+        large_list_layout.addStretch(1)
+        self._add_row(form_layout, row, tr("大列表保护"), large_list_widget)
         row += 1
         self._add_row(form_layout, row, tr("翻译目标语言"), self.translation_target_combo)
         row += 1
@@ -741,9 +850,12 @@ class MainWindow(QMainWindow):
     def _collect_form_values(self) -> dict[str, Any]:
         return {
             "input_dir": self.input_dir_edit.text(),
+            "file_pattern": self.file_pattern_edit.text(),
             "output_dir": self.output_dir_edit.text(),
             "input_column": self.input_column_edit.text(),
             "enable_translation": self.enable_translation_checkbox.isChecked(),
+            "skip_large_gene_files": self.skip_large_gene_files_checkbox.isChecked(),
+            "max_genes_per_file": self.max_genes_edit.text(),
             "api_base_url": self.api_base_url_edit.text(),
             "api_format": self.api_format_combo.currentData(),
             "api_key": self.api_key_edit.text(),
@@ -761,9 +873,13 @@ class MainWindow(QMainWindow):
 
     def _apply_form_values(self, values: dict[str, Any]) -> None:
         self.input_dir_edit.setText(str(values.get("input_dir", "")))
+        self.file_pattern_edit.setText(str(values.get("file_pattern", "")))
+        self._refresh_matched_count()
         self.output_dir_edit.setText(str(values.get("output_dir", "")))
         self.input_column_edit.setText(str(values.get("input_column", "")))
         self.enable_translation_checkbox.setChecked(bool(values.get("enable_translation", True)))
+        self.skip_large_gene_files_checkbox.setChecked(bool(values.get("skip_large_gene_files", True)))
+        self.max_genes_edit.setText(str(values.get("max_genes_per_file", DEFAULT_MAX_GENES_PER_FILE)))
         self.api_base_url_edit.setText(str(values.get("api_base_url", "")))
         self._set_combo_by_data(self.api_format_combo, str(values.get("api_format", ApiFormat.ANTHROPIC_MESSAGES.value)))
         self.api_key_edit.setText(str(values.get("api_key", "")))
@@ -790,8 +906,11 @@ class MainWindow(QMainWindow):
             input_dir=str(values["input_dir"]).strip(),
             output_dir=str(values["output_dir"]).strip(),
             download_type=str(values["download_type"]).strip(),
+            file_pattern=str(values.get("file_pattern", "")).strip(),
             input_column=str(values["input_column"]).strip(),
             enable_translation=bool(values["enable_translation"]),
+            skip_large_gene_files=bool(values.get("skip_large_gene_files", True)),
+            max_genes_per_file=_parse_gene_limit(str(values.get("max_genes_per_file", "")), fallback=DEFAULT_MAX_GENES_PER_FILE),
             api_base_url=str(values["api_base_url"]).strip(),
             api_key=str(values["api_key"]).strip(),
             api_model=str(values["api_model"]).strip(),
@@ -864,9 +983,13 @@ class MainWindow(QMainWindow):
 
     def _apply_profile(self, profile: SavedProfile) -> None:
         self.input_dir_edit.setText(profile.input_dir)
+        self.file_pattern_edit.setText(profile.file_pattern)
+        self._refresh_matched_count()
         self.output_dir_edit.setText(profile.output_dir)
         self.input_column_edit.setText(profile.input_column)
         self.enable_translation_checkbox.setChecked(profile.enable_translation)
+        self.skip_large_gene_files_checkbox.setChecked(profile.skip_large_gene_files)
+        self.max_genes_edit.setText(str(profile.max_genes_per_file))
         self.api_base_url_edit.setText(profile.api_base_url)
         self._set_combo_by_data(self.api_format_combo, profile.api_format)
         self.api_key_edit.setText(profile.api_key)
@@ -954,6 +1077,26 @@ class MainWindow(QMainWindow):
         selected = QFileDialog.getExistingDirectory(self, tr("选择基因列表文件夹"), self.input_dir_edit.text() or "")
         if selected:
             self.input_dir_edit.setText(selected)
+            self._refresh_matched_count()
+
+    def _refresh_matched_count(self) -> None:
+        """Show how many files the current input directory and pattern will match."""
+        # 目录为空或不存在都显示 0
+        raw_dir = self.input_dir_edit.text().strip()
+        if not raw_dir:
+            self.matched_files_label.setText(tr("匹配文件：0 个"))
+            return
+        folder = Path(raw_dir)
+        if not folder.is_dir():
+            self.matched_files_label.setText(tr("匹配文件：0 个"))
+            return
+
+        # 按当前目录 + 模式实时计算匹配数
+        try:
+            count = len(discover_gene_files(folder, self.file_pattern_edit.text()))
+        except Exception:  # noqa: BLE001
+            count = 0
+        self.matched_files_label.setText(tr("匹配文件：{count} 个").format(count=count))
 
     def _browse_output(self) -> None:
         selected = QFileDialog.getExistingDirectory(self, tr("选择输出结果文件夹"), self.output_dir_edit.text() or "")
@@ -1146,9 +1289,15 @@ class MainWindow(QMainWindow):
         self.analysis_progress.setValue(100)
         self.status_label.setText(tr("状态：处理结束"))
         self.analysis_status_label.setText(tr("Metascape 分析进度：全部任务已结束"))
-        if self._translation_enabled:
+        translation_paused = any(
+            item.status in {TaskStatus.SUCCESS, TaskStatus.PARTIAL} and not item.translation_status
+            for item in results
+        )
+        if self._translation_enabled and not translation_paused:
             self.translation_progress.setValue(100)
             self.translation_status_label.setText(tr("翻译进度：全部任务已结束"))
+        elif translation_paused:
+            self.translation_status_label.setText(tr("翻译进度：本次已暂停（接口不可用）"))
         self.start_button.setEnabled(True)
         self.stop_button.setEnabled(False)
         self.ui_language_combo.setEnabled(True)
@@ -1246,5 +1395,6 @@ def run_app() -> None:
     app.setWindowIcon(QIcon(str(ensure_app_icon())))
     app.setFont(QFont("Segoe UI", 11))
     window = MainWindow()
-    window.show()
+    # 默认直接最大化铺满屏幕（不记住上次窗口尺寸）
+    window.showMaximized()
     app.exec()

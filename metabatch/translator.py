@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import threading
 import time
-from typing import Any
+from typing import Any, Callable
 
 import requests
 
@@ -41,6 +41,11 @@ class TranslationError(Exception):
 
 RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 DEFAULT_BATCH_SIZE = 20
+# Adaptive chunking: pending items whose total serialized size fits within
+# this budget are sent in a single request; otherwise they are split into the
+# minimum number of balanced chunks.
+BATCH_CHAR_LIMIT = 4000
+MAX_BATCH_ITEMS = 100
 
 
 class _InflightCall:
@@ -145,7 +150,12 @@ class Translator:
     def translate(self, text: str) -> str:
         raise NotImplementedError
 
-    def translate_batch(self, texts: list[str]) -> list[str]:
+    def translate_batch(
+        self,
+        texts: list[str],
+        progress_callback: Callable[[int, int], None] | None = None,
+        stop_event=None,
+    ) -> list[str]:
         """Translate several strings while preserving order."""
         return [self.translate(text) for text in texts]
 
@@ -165,11 +175,14 @@ class OpenAICompatibleTranslator(Translator):
         proxy_url: str | None = None,
         batch_size: int = DEFAULT_BATCH_SIZE,
     ) -> None:
+        # 端点与鉴权配置
         self._api_format = _coerce_api_format(api_format)
         self._auth_field = auth_field.strip() or "ANTHROPIC_AUTH_TOKEN"
         self._url = self._build_url(base_url, self._api_format)
         self._api_key = api_key.strip()
         self._model = model.strip()
+
+        # 翻译提示词、请求节奏与网络参数
         self._system_prompt = SYSTEM_PROMPT_TEMPLATE.format(
             language=target_language.strip() or DEFAULT_TARGET_LANGUAGE
         )
@@ -178,12 +191,11 @@ class OpenAICompatibleTranslator(Translator):
         self._timeout_seconds = timeout_seconds
         self._proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else None
         self._batch_size = max(1, min(int(batch_size), 100))
+
+        # 缓存、在途请求与并发锁（批量锁防止并发 worker 在缓存写入前重复发送同一批）
         self._cache: dict[str, str] = {}
         self._inflight: dict[str, _InflightCall] = {}
         self._lock = threading.Lock()
-        # A workbook is translated in chunks.  Serialising the short cache
-        # check + request section prevents concurrent workers from sending
-        # the same chunk before the first worker has populated the cache.
         self._batch_lock = threading.Lock()
         self._last_request_at = 0.0
 
@@ -226,11 +238,18 @@ class OpenAICompatibleTranslator(Translator):
         call.done.set()
         return translated
 
-    def translate_batch(self, texts: list[str]) -> list[str]:
-        """Translate a batch in one API request, using the shared cache."""
+    def translate_batch(
+        self,
+        texts: list[str],
+        progress_callback: Callable[[int, int], None] | None = None,
+        stop_event=None,
+    ) -> list[str]:
+        """Translate a batch, deciding the number of requests from its size."""
         normalized = [str(text).strip() for text in texts]
         result = ["" for _ in normalized]
+
         with self._batch_lock:
+            # 去重并跳过已缓存条目，构建真正需要请求的 pending
             pending: list[str] = []
             seen: set[str] = set()
             for source in normalized:
@@ -241,25 +260,71 @@ class OpenAICompatibleTranslator(Translator):
                 if cached is None:
                     pending.append(source)
                 seen.add(source)
-            for start in range(0, len(pending), self._batch_size):
-                chunk = pending[start : start + self._batch_size]
+
+            # 按自适应计划逐块请求，每块写入缓存、回调进度并检查停止
+            for chunk in self._plan_chunks(pending):
+                if stop_event is not None and stop_event.is_set():
+                    raise TranslationError(tr("用户已停止任务。"))
+
                 translated = self._translate_batch_with_retries(chunk)
                 if len(translated) != len(chunk):
                     raise TranslationError(tr("翻译接口返回的批量结果数量不匹配。"))
+
                 with self._lock:
                     self._cache.update(dict(zip(chunk, translated, strict=True)))
+
+                if progress_callback is not None:
+                    with self._lock:
+                        resolved = sum(1 for source in normalized if not source or source in self._cache)
+                    progress_callback(resolved, len(normalized))
+
+        # 从缓存按原顺序回填（重复条目也能拿到同一份结果）
         with self._lock:
             for index, source in enumerate(normalized):
                 result[index] = self._cache.get(source, "") if source else ""
         return result
 
+    @staticmethod
+    def _plan_chunks(pending: list[str]) -> list[list[str]]:
+        """Return the minimum number of chunks bounded by chars and item count."""
+        if not pending:
+            return []
+
+        # 用 JSON 序列化长度近似每条的请求字符开销
+        sizes = [len(json.dumps(item, ensure_ascii=False)) for item in pending]
+
+        # 小输入：总字符与条数都在预算内，整块一次发送
+        if len(pending) <= MAX_BATCH_ITEMS and sum(sizes) <= BATCH_CHAR_LIMIT:
+            return [pending]
+
+        # 大输入：按字符预算贪心打包，不拆分单条，得到最少块
+        chunks: list[list[str]] = []
+        current: list[str] = []
+        current_size = 0
+        for item, size in zip(pending, sizes):
+            if current and (
+                current_size + size > BATCH_CHAR_LIMIT
+                or len(current) >= MAX_BATCH_ITEMS
+            ):
+                chunks.append(current)
+                current = []
+                current_size = 0
+            current.append(item)
+            current_size += size
+        if current:
+            chunks.append(current)
+        return chunks
+
     def _translate_batch_with_retries(self, texts: list[str]) -> list[str]:
+        # 构造批量 prompt：要求只返回 translations 数组，顺序与数量严格一致
         prompt = (
             "Translate each item to the target language. Return ONLY a JSON object with key "
             "translations whose value is an array of translated strings in exactly the same order and length.\n"
             + json.dumps(texts, ensure_ascii=False)
         )
         last_error: Exception | None = None
+
+        # 带重试的请求循环
         for attempt in range(1, self._max_retries + 1):
             response: requests.Response | None = None
             try:
@@ -268,11 +333,13 @@ class OpenAICompatibleTranslator(Translator):
             except requests.RequestException as exc:
                 last_error = exc
             else:
+                # 可重试状态码（429/5xx）记录错误，稍后退避；其他 4xx 直接失败
                 if response.status_code in RETRYABLE_STATUS_CODES:
                     last_error = TranslationError(tr("翻译接口暂时不可用，HTTP {status}: {body}").format(status=response.status_code, body=response.text[:300]))
                 elif response.status_code >= 400:
                     raise TranslationError(tr("翻译请求被拒绝，HTTP {status}: {body}").format(status=response.status_code, body=response.text[:300]))
                 else:
+                    # 提取文本并解析批量 JSON，兼容对象、裸数组与容错格式
                     content = self._extract_message_content(_response_json(response, tr("翻译接口"))).strip()
                     try:
                         parsed = self._parse_batch_json(content)
@@ -284,8 +351,11 @@ class OpenAICompatibleTranslator(Translator):
                         raise ValueError("invalid translation array")
                     except (json.JSONDecodeError, ValueError, TypeError):
                         last_error = TranslationError(tr("无法解析翻译结果：{payload}").format(payload=content[:300]))
+
+            # 未耗尽尝试次数则按退避策略等待
             if attempt < self._max_retries:
                 time.sleep(self._retry_delay(attempt, response))
+
         raise TranslationError(tr("翻译失败：{error}").format(error=last_error)) from last_error
 
     @staticmethod
@@ -376,9 +446,14 @@ class OpenAICompatibleTranslator(Translator):
         return {**_auth_headers(self._api_key, self._api_format, self._auth_field), "Content-Type": "application/json"}
 
     def _payload(self, text: str) -> dict[str, Any]:
+        # 三种 API 格式共用的消息内容
         messages = [{"role": "user", "content": text}]
+
+        # Anthropic Messages：system 独立、max_tokens 固定
         if self._api_format is ApiFormat.ANTHROPIC_MESSAGES:
             return {"model": self._model, "max_tokens": 4096, "system": self._system_prompt, "messages": messages}
+
+        # OpenAI Responses：instructions、input 结构与 max_output_tokens
         if self._api_format is ApiFormat.OPENAI_RESPONSES:
             return {
                 "model": self._model,
@@ -386,6 +461,8 @@ class OpenAICompatibleTranslator(Translator):
                 "max_output_tokens": 4096,
                 "input": [{"role": "user", "content": [{"type": "input_text", "text": text}]}],
             }
+
+        # OpenAI Chat：system 放在消息列表，temperature 固定 0
         return {
             "model": self._model,
             "temperature": 0,
@@ -428,6 +505,7 @@ class OpenAICompatibleTranslator(Translator):
         return f"{value}/models"
 
     def _extract_message_content(self, payload: dict[str, Any]) -> str:
+        # Anthropic Messages：从 content 块中取 text 拼接
         if self._api_format is ApiFormat.ANTHROPIC_MESSAGES:
             content = payload.get("content", [])
             if isinstance(content, list):
@@ -435,6 +513,7 @@ class OpenAICompatibleTranslator(Translator):
                 return "".join(texts)
             raise TranslationError(tr("Anthropic 接口返回格式异常：{payload}").format(payload=payload))
 
+        # OpenAI Responses：优先 output_text，否则从 output 结构里提取文本
         if self._api_format is ApiFormat.OPENAI_RESPONSES:
             output_text = payload.get("output_text", "")
             if isinstance(output_text, str) and output_text.strip():
@@ -457,6 +536,7 @@ class OpenAICompatibleTranslator(Translator):
                     return "".join(texts)
             raise TranslationError(tr("Responses 接口返回格式异常：{payload}").format(payload=payload))
 
+        # OpenAI Chat：从 choices[0].message.content 取文本（兼容字符串与数组）
         choices = payload.get("choices")
         if not choices:
             raise TranslationError(tr("翻译接口未返回 choices：{payload}").format(payload=payload))

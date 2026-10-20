@@ -144,17 +144,56 @@ class TranslatorRetryTests(unittest.TestCase):
         self.assertEqual(mocked_post.call_count, 1)
 
     @patch("metabatch.translator.requests.post")
-    def test_translate_batch_splits_large_input_into_chunks(self, mocked_post: object) -> None:
-        mocked_post.side_effect = [
-            FakeResponse(BATCH_ANTHROPIC_OK_PAYLOAD),
-            FakeResponse({"content": [{"type": "text", "text": '{"translations":["第三项"]}'}]}),
-        ]
+    def test_translate_batch_uses_one_request_when_under_char_budget(self, mocked_post: object) -> None:
+        mocked_post.return_value = FakeResponse(BATCH_ANTHROPIC_OK_PAYLOAD)
         translator = self._translator(batch_size=2)
 
-        result = translator.translate_batch(["one", "two", "three"])
+        result = translator.translate_batch(["cell cycle", "immune response", "cell cycle"])
 
-        self.assertEqual(result, ["细胞周期", "免疫反应", "第三项"])
-        self.assertEqual(mocked_post.call_count, 2)
+        # Adaptive chunking: even with batch_size=2, short text is one request.
+        self.assertEqual(result, ["细胞周期", "免疫反应", "细胞周期"])
+        self.assertEqual(mocked_post.call_count, 1)
+
+    def test_translate_batch_splits_oversized_input_into_chunks(self) -> None:
+        translator = self._translator()
+        chunks: list[list[str]] = []
+
+        def fake(chunk: list[str]) -> list[str]:
+            chunks.append(chunk)
+            return ["[zh] " + item for item in chunk]
+
+        translator._translate_batch_with_retries = fake
+        # Distinct long items: each exceeds the char budget when paired.
+        items = [("x" * 3000) + str(index) for index in range(3)]
+
+        result = translator.translate_batch(items)
+
+        self.assertEqual(len(chunks), 3)
+        self.assertEqual(result, ["[zh] " + item for item in items])
+
+
+class PlanChunksTests(unittest.TestCase):
+    def test_small_input_is_single_chunk(self) -> None:
+        items = ["a", "bb", "ccc"]
+        chunks = OpenAICompatibleTranslator._plan_chunks(items)
+        self.assertEqual(chunks, [items])
+
+    def test_empty_input_is_no_chunks(self) -> None:
+        self.assertEqual(OpenAICompatibleTranslator._plan_chunks([]), [])
+
+    def test_too_many_items_is_split(self) -> None:
+        from metabatch.translator import MAX_BATCH_ITEMS
+
+        items = ["x" * 10 for _ in range(MAX_BATCH_ITEMS + 1)]
+        chunks = OpenAICompatibleTranslator._plan_chunks(items)
+        self.assertEqual(len(chunks), 2)
+        self.assertLessEqual(len(chunks[0]), MAX_BATCH_ITEMS)
+        self.assertEqual(sum(len(chunk) for chunk in chunks), len(items))
+
+    def test_oversized_items_are_not_split_and_nothing_is_lost(self) -> None:
+        items = ["y" * 3000 for _ in range(4)]
+        chunks = OpenAICompatibleTranslator._plan_chunks(items)
+        self.assertEqual(chunks, [[items[0]], [items[1]], [items[2]], [items[3]]])
 
 
 class GeneReaderTests(unittest.TestCase):
